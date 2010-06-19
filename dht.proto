@@ -7,7 +7,7 @@ enum PktType {
     FINDVALUE = 4;
     CHECKREACHABILITY = 5;
     GETPUBLICKEY = 6;
-    ANSWERBOOL = 50;
+    ANSWEROK = 50;
     ANSWERPONG = 51;
     ANSWERNODES = 52;
     ANSWERERROR = 53;
@@ -17,9 +17,10 @@ message Header {
     required int32 msgid = 2;
     required int32 part = 3; //Kinda like conversation packet counter
     optional bytes hmac = 5;
-    optional ThisNode from = 6;
+    optional NodeDescriptor from = 6;
     optional bool isencrypted = 7;
 }
+
 
 message Ping {
 
@@ -33,7 +34,7 @@ message Store {
     required bytes key = 1;
     required bytes value = 2;
     
-    optional bool ismore = 3:
+    optional bool ismore = 3;
 }
 message FindNode {
     required bytes key = 1;
@@ -43,27 +44,22 @@ message CheckReachability {
     required int32 port = 1;
 }
 
-}
-message NodeDescriptor {
-    required bytes ipaddr = 1;
-    required int32 udpport = 2;
-    required bool behindnat = 3;
-    required bytes nodeid = 4;
-}
 
-message ThisNode { //Like a "from" field
+
+message NodeDescriptor { //Like a "from" field
     required int32 udpport = 1;
     required bool behindnat = 2;
     required bytes nodeid = 3;
-    optional publickey = 4;
+    optional Publickey publickey = 4;
+    optional bytes ipaddr = 5;
+}
+message Publickey {
+    required bytes modulus = 1;
+    required int exponent = 2;
 }
 
-message GetPublicKey {
-    
-}
-
-message AnswerBool {
-    required bool bool = 1;
+message AnswerOk {
+    required bool ok = 1;
 }
 
 message AnswerFindNode {
