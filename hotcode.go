@@ -23,14 +23,13 @@ type GenericHot struct {
 func NewHot(f func(map[string]interface{})) *GenericHot {
     h := new(GenericHot)
     h.F = f
-    h.Answer = make(chan *Message)
+    h.Answer = make(chan interface{})
     return h
 }
 func (this *GenericHot) Unpack(data map[string]interface{}) {
     this.F(data)
 }
 type HotRoutine struct {
-    Routine
     HotChan chan Hot
     hotlock bool
 }

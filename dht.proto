@@ -6,7 +6,6 @@ enum PktType {
     FINDNODE = 3;
     FINDVALUE = 4;
     CHECKREACHABILITY = 5;
-    GETPUBLICKEY = 6;
     ANSWEROK = 50;
     ANSWERPONG = 51;
     ANSWERNODES = 52;
@@ -55,7 +54,7 @@ message NodeDescriptor { //Like a "from" field
 }
 message Publickey {
     required bytes modulus = 1;
-    required int exponent = 2;
+    required int32 exponent = 2;
 }
 
 message AnswerOk {

@@ -1,6 +1,6 @@
 package dht
 
-import . "gocon"
+
 import . "container/vector"
 import "net"
 import "os"
@@ -12,6 +12,9 @@ import random "rand"
 import "time"
 import "encoding/binary"
 import "bytes"
+import "goprotobuf.googlecode.com/hg/proto"
+import "fmt"
+import "big"
 
 const (
     K = 20
@@ -26,37 +29,33 @@ const (
 
 )
 type Key []byte
-func Distance(key1 Key,key2 Key) Key {
-}
 
-type InNodeDescriptor { /* In = internal */
+type InNodeDescriptor struct { /* In = internal */
     Addr *net.UDPAddr
     Behindnat bool
     Nodeid []byte
     Connhandler *ConnHandler
-    PublicKey *rsa.PublicKey
+    Publickey *rsa.PublicKey
     Bucket *Bucket
 }
 
-type NodeHandler struct {
-    ProtoHandler
-}
 
 type Bucket struct {
     Node *Node
-    v Vector 
+    v Vector
 }
-func NewBucket(n *Node) b *Bucket {
-    b  new(Bucket)
+    
+func NewBucket(n *Node) *Bucket {
+    b := new(Bucket)
     b.Node = n
-    return
+    return b
 }
 func (this *Bucket) Len() int {
     return this.v.Len()
 }
 func (this *Bucket) Less(i,j int) bool {
-    distance1 := Distance(this.At(i).Nodeid, this.Node.Nodeid)
-    distance2 := Distance(this.At(j).Nodeid, this.Node.Nodeid)
+    distance1 := XOR(this.At(i).Nodeid, this.Node.Nodeid)
+    distance2 := XOR(this.At(j).Nodeid, this.Node.Nodeid)
     return distance1.Less(distance2)
 }
 func (this *Bucket) At(i int) *InNodeDescriptor {
@@ -73,13 +72,23 @@ func (this *Bucket) Pop() *InNodeDescriptor {
     return this.v.Pop().(*InNodeDescriptor)
 }
 
-
-func (this *Bucket) Cut(i,j int) *InNodeDescriptor {
-    this.v.Pop().(*InNodeDescriptor)
+func (this *Bucket) Cut(i,j int)  {
+    this.v.Cut(i,j)
+}
+func (this *Bucket) Iter()  chan *InNodeDescriptor {
+    ch := this.v.Iter()
+    nodech := make(chan *InNodeDescriptor)
+    go func(){
+        for {
+            if closed(ch) { close(nodech); return }
+            nodech <- (<-ch).(*InNodeDescriptor)
+        }
+    }()
+    return nodech
 }
 type Node struct {
     HotRoutine
-    Buckets map[int]
+    Buckets map[int]*Bucket
     Nodeid Key
     Reachable bool
     Keypair *rsa.PrivateKey
@@ -94,22 +103,32 @@ type Listener struct {
 type ConnHandler struct {
     HotRoutine
     Node *Node
-    RecpNode *InNodeDesc
+    RecpNode *InNodeDescriptor
     Conn *net.UDPConn
     Buffer []byte
-    IdMap map[int32]chan hdr_n_data
-    Default chan hdr_n_data
+    IdMap map[int32]chan Buf
+    Default chan Buf
     FirstPacketSent bool //If the repicient needs the publickey
     NodeIsAdded bool //If the node is added to bucket
 }
 
+
+type Buf []byte
+func (b Buf) Write(p []byte) (int, os.Error) {
+    copy(b,p)
+    return len(p), nil
+}
+func (b Buf) Read(p []byte) (int, os.Error) {
+    copy(p,b)
+    return len(b), nil
+}
 
 
 func NewMsgId() int32 {
     return random.Int31()
 }
 
-func BucketNo(d Distance) uint {
+func BucketNo(d Key) uint {
 	var basebitnr uint = 0
 
 	for _, b := range d {
@@ -129,13 +148,13 @@ func BucketNo(d Distance) uint {
 	return basebitnr
 }
 
-func XOR(a, b []byte) Key {
+func XOR(a, b Key) Key {
 	l := len(a)
 	if l != len(b) {
 		return nil
 	}
 
-	d := make(Distance, l)
+	d := make(Key, l)
 
 	for i := 0; i < l; i++ {
 		d[i] = a[i] ^ b[i]
@@ -164,55 +183,52 @@ func (a Key) Less(b Key) bool {
 
 
 
-type hdr_n_data {
+type hdr_n_data struct {
     header *Header
     data []byte
 }
 
 
-func (this *Node) DecodePacket(data []byte) (*Header,[]byte, os.Error) {
+func (this *ConnHandler) DecodePacket(data Buf) (*Header,[]byte, os.Error) {
     //Read header first
     var hdrlen uint32
     var datalen uint32
-    if err != nil  {
-        return nil,nil,addr,err
-    }
-    err = binary.Read(data[0:4], binary.BigEndian, &hdrlen)
-        if err != nil { return nil,nil,addr,err }
+    err := binary.Read(data[0:4], binary.BigEndian, &hdrlen)
+        if err != nil { return nil,nil,err }
     err = binary.Read(data[4:8], binary.BigEndian, &datalen)
-        if err != nil { return nil,nil,addr,err }
+        if err != nil { return nil,nil,err }
     if !(hdrlen < 512 && datalen <= 4096 ) {
-        return nil,nil,addr,os.ENOMEM
+        return nil,nil,os.ENOMEM
     }
-    hdrdata := make(Buf, hdrlen)
-    newdata := make(Buf, datalen)
-    copy(hdrdata,tmp)
+
     header := NewHeader()
-    err = proto.Unmarshal(hdrdata, header)
+    err = proto.Unmarshal(data[8:8+hdrlen], header)
     if err != nil {
-        return nil,nil,addr,err
+        return nil,nil,err
     }
-    copy(newdata,tmp)
+    newdata := make(Buf, datalen)
+    copy(newdata,data[8+hdrlen:8+hdrlen+datalen])
     
     
     return header, newdata,nil
 }
  
-func (this *Node) EncodePacket(data []byte, t,id,part int32, first,hmac,encrypted bool) []byte {
+func (this *ConnHandler) EncodePacket(data []byte, t,id,part int32, first,hmac,encrypted bool) []byte {
+        newt := NewPktType(t)
         header := NewHeader()
-        header.Type = proto.Int32(t)
+        header.Type = newt
         header.Msgid = proto.Int32(id)
         hdrdata,err := proto.Marshal(header)
         if err != nil {
             fmt.Printf("%s\n", err)
-            return
+            return nil
         }
         hdrlen := uint32(len(hdrdata))
         datalen :=  uint32(len(data))
-        buffer := 8+hdrlen+datalen
+        buffer := make(Buf, 8+hdrlen+datalen)
         binary.Write(buffer, binary.BigEndian, [2]uint32{hdrlen,datalen})
         copy(buffer[8:8+len(hdrdata)],hdrdata)
-        copy(buffer[8+len(hdrdata):8+len(hdrdata)+len(data)], data
+        copy(buffer[8+len(hdrdata):8+len(hdrdata)+len(data)], data) 
         return buffer
 }
 
@@ -235,51 +251,34 @@ func (this *ConnHandler) Start() {
     go this.HotStart()
     
     this.Buffer = make([]byte, 10000)
-    this.Default = make(chan []byte)
+    this.Default = make(chan Buf)
     go func()  {
         for {
             n, err := this.Conn.Read(this.Buffer)
             if err != nil {continue}
-            newbuf := make([]byte, n)
+            newbuf := make(Buf, n)
             copy(newbuf, this.Buffer)
             header,_,err := this.DecodePacket(newbuf)
             
             
             if *header.Part >  0 {
                 if this.IdMap[*header.Msgid] == nil {
-                    this.IdMap[*header.Msgid] = make(chan hdr_n_data)
+                    this.IdMap[*header.Msgid] = make(chan Buf)
                 }
                 go func() { this.IdMap[*header.Msgid]<-newbuf}()
             } else {
-                go func() { this.Default <- newbuf }
+                go func() { this.Default <- newbuf }()
             }
             
             
         }
     }()
 }
-func (this *ConnHander) getRecpPublickey() bool {
-    if this.RecpPublicKey != nil {  
-        return true
-    } else {
-        m := NewGetPublicKey()
-        mdata := proto.Marshal(m) {
-        }
-    }
-}
 
 func (this *ConnHandler) Read(msgid int32)(*Header, []byte) {
     h := NewHot(func(shared map[string]interface{}){     
         self := shared["self"].(*GenericHot)
         
-
-/*        
-        
-        //see if we have publickey, if not, require that it is included in the header
-        if this.RecpNode.PublicKey == nil {
-            
-        }
-  */      
         if msgid == 0 {
             data := <-this.Default
             header,mdata,err := this.DecodePacket(data)
@@ -287,7 +286,7 @@ func (this *ConnHandler) Read(msgid int32)(*Header, []byte) {
               //If this is some of the first packets received  - needs perhaps to be added to bucket
                 if !this.NodeIsAdded {
                     //HMAC and publickey and nodedescriptor objects are mandatory for this first header. If not included, ignore
-                    if header.Hmac == nil || header.From == nil || header.From.PublicKey == nil {
+                    if header.Hmac == nil || header.From == nil || header.From.Publickey == nil {
                         self.Answer<-hdr_n_data{nil,nil}
                         return
                     } else {
@@ -295,14 +294,14 @@ func (this *ConnHandler) Read(msgid int32)(*Header, []byte) {
                        
                         desc := new(InNodeDescriptor)
                         desc.Connhandler = this
-                        desc.Addr = this.Conn.RemoteAddr()
+                        desc.Addr = this.Conn.RemoteAddr().(*net.UDPAddr)
                         desc.Behindnat = *header.From.Behindnat
                         desc.Nodeid = header.From.Nodeid
                         
                         //Decode public key
-                        pkdata := header.From.Publickey
+                        pkmodulus := header.From.Publickey.Modulus
                         sha1hash := sha1.New()
-                        sha1hash.Write(pkdata)
+                        sha1hash.Write(pkmodulus)
                         if bytes.Compare(sha1hash.Sum(), desc.Nodeid) != 0 {//If public key or nodeid is wrong
                             self.Answer<-hdr_n_data{nil,nil}
                             return
@@ -310,17 +309,17 @@ func (this *ConnHandler) Read(msgid int32)(*Header, []byte) {
                         pk := new(rsa.PublicKey)
                         pk.N = new(big.Int)
                         pk.N.SetBytes(header.From.Publickey.Modulus) 
-                        pk.E = *header.From.Publickey.Exponent
+                        pk.E = int(*header.From.Publickey.Exponent)
                         desc.Publickey = pk
                         
                         if this.Node.AddNode(desc) {
                             this.RecpNode = desc
-                            this.NodeAdded = true
+                            this.NodeIsAdded = true
                         }
                     }
             
                 }
-              if header.Encrypted != nil {
+              if header.Isencrypted != nil {
                 //Decrypt the packet
                 //
                 //
@@ -329,7 +328,7 @@ func (this *ConnHandler) Read(msgid int32)(*Header, []byte) {
             }
             return
         } else {
-            if this.IdMap[msgid] == nil { this.IdMap[msgid] = make(chan []byte) }
+            if this.IdMap[msgid] == nil { this.IdMap[msgid] = make(chan Buf) }
             data :=  <-this.IdMap[msgid]
                         header,mdata,err := this.DecodePacket(data)
             if err != nil { self.Answer<-hdr_n_data{nil,nil}} else {
@@ -339,17 +338,17 @@ func (this *ConnHandler) Read(msgid int32)(*Header, []byte) {
         }   
         
     })
-    this.queryHot(h)
+    this.QueryHot(h)
     answer:=(<-h.Answer).(hdr_n_data)
    return answer.header,answer.data
 }
 
-func (this *ConnHandler) Send(data []byte, t, id,part  int32, first,hmac,encrypted bool) {
+func (this *ConnHandler) Send(data []byte, t, id,part  int32, first,hmac,encrypted bool) bool {
     //Check if we have publickey
-    pk := this.RecpNode.PublicKey
+
     
     if encrypted {
-        if this.RecpNode.PublicKey == nil {
+        if this.RecpNode.Publickey == nil {
             //Return false, because we need the public key
             return false
         } 
@@ -358,20 +357,21 @@ func (this *ConnHandler) Send(data []byte, t, id,part  int32, first,hmac,encrypt
     
     
     this.Conn.Write(pdata)   
+    return true
 }
 
 func (this *ConnHandler) Ping() bool {
     msgid := NewMsgId()
     ping_packet := NewPing()
     ping_data,_ := proto.Marshal(ping_packet)
-    packet := this.EncodePacket(ping_data, PktType_PING, msgid, 0, false)
-    this.Conn.SetReadTimeout(5000000000)
+    this.Send(ping_data, PktType_PING, msgid, 0,false, false,false)
+    this.Conn.SetReadTimeout(2000000000)
     header,data := this.Read(msgid)
     this.Conn.SetReadTimeout(0)
-    if header == nil or data == nil {
+    if header == nil || data == nil {
         return false
     }
-    if *header.Type == PktType_PONG {
+    if *header.Type == PktType_ANSWERPONG {
         return true
     }
     return false
@@ -385,37 +385,29 @@ func (this *ConnHandler) Store(key Key, value []byte) bool {
     if len(value) > 3000 {  //Split it up in multiple packets 
     } else {
         mdata,_ := proto.Marshal(m)
-        this.Send(mdata,PktType_STORE, msgid, 0,false, true)
+        this.Send(mdata,PktType_STORE, msgid, 0,false,true,false)
         if this.IsAccepted(msgid) {
             return true
-        } else {
-            return false
         }
     }
+    return false
 }
-func (this *ConnHandler) IsAccepted(msgid int) bool {
+func (this *ConnHandler) IsAccepted(msgid int32) bool {
     header, _ := this.Read(msgid)
     if *header.Type == PktType_ANSWEROK {
         return true
     }
     return false
 }
-func (this *ConnHandler) WaitPong(msgid int) bool {
-    this.Conn.SetReadTimeout(2000000000)
-    header,_ := this.Read(msgid)
-    if header != nil {return true }
-    this.Conn.SetReadTimeout(0)
-    return false
-}
 
 func NewNode(udpport int) *Node {
     n := new(Node)
-    n.Buckets = make(map[int]Bucket)
+    n.Buckets = make(map[int]*Bucket)
     return n
 }
 
 
-func NewListener(node *Node, port int) {
+func NewListener(node *Node, port int) *Listener {
     l := new(Listener)
     l.Node = node
     l.Port = port
@@ -435,66 +427,67 @@ func (this *Listener) Listen() {
     }
 }
 
-func (this *Node) GetNodeDesc(key Key) *InNodeDesc {
-       
-}
 
-func (this *Node) FindCloseNodes(key Key) []*InNodeDesc {
-    var found int = 0
-    distance := Distance(key, this.Nodeid)
-    no := BucketNo(distance)
-    ch := this.Buckets[no].Iter()
-    for {
-        if closed(b) {break;}
-        b := <-ch
-        
+func (this *Node) FindCloseNodes(key Key) *Bucket {
+    distance := XOR(key, this.Nodeid)
+
+    closenodes := NewBucket(this)
+    var ichan chan *InNodeDescriptor
+    var first int
+    var leap int
+    var goleft bool = true
+    
+    first = int(BucketNo(distance))
+    ichan = this.Buckets[first].Iter()
+    for closenodes.Len() < K {
+        if closed(ichan) {
+            if goleft {
+                if first - leap <= 0 {
+                    goleft = !goleft
+                    continue
+                }
+                ichan = this.Buckets[first - leap].Iter()
+                
+                if first+leap < 159 {
+                    goleft = !goleft
+                }
+            }
+            if !goleft {
+                if first + leap >= 159 {
+                    goleft = !goleft
+                    continue
+                }
+                ichan = this.Buckets[first + leap].Iter()
+                
+                if first-leap > 0 {
+                    goleft = !goleft
+                }
+            }
+            
+        }
+        closenodes.Push(<-ichan)
+
     }
-    
-    
-}
-
-func (this *Node) RemoveNode(key Key) {
-    h := NewHot(func(shared map[string]interface{}){
-        self := shared["self"].(*GenericHot)
-    })
-    this.queryHot(h)
-    answer:=<-h.Answer
+    return closenodes
 }
 
 func (this *Node) AddNode(node *InNodeDescriptor) bool {
-/*
 
-    h := NewHot(func(shared map[string]interface{}){
-        self := shared["self"].(*GenericHot)
-        */
         distance := XOR(this.Nodeid,node.Nodeid)
-        no := BucketNo(distance)
+        no := int(BucketNo(distance))
 
         
-        if this.Buckets[no].Len() >= K {
-            msgid := NewMsgId()
-            this.Buckets[0].Connhandler.Send([...]byte{""}, PktType_PING, msgid, 0, false,false,false)
-            if !this.Buckets[0].Connhandler.WaitPong() {
-                this.Buckets.PopFront()
-                this.Buckets.Push(node)
-                return true
+        if this.Buckets[no].Len() >= K  {
+            if !(this.Buckets[no].At(0).Connhandler.Ping()) {
+                return false
             }
-            return false
+            return true
         } 
         this.Buckets[no].Push(node)
         return true
-       
-/*
-    })
-    this.queryHot(h)
-    answer:=(<-h.Answer).(bool)
-    return answer
-    */
-    return true
+
 }
-func (this *InNodeDescriptor) {
-    
-}
+
 
 func (this *Node) Bootstrap(port int, knownhost *net.UDPAddr) bool {
     random.Seed(time.Nanoseconds())
@@ -502,21 +495,21 @@ func (this *Node) Bootstrap(port int, knownhost *net.UDPAddr) bool {
     //Establish private key
     f, err := os.Open("~/.godht/private_key", os.O_RDONLY, 0666) 
     if err != nil {
-        os.Mkdir("~/.godht")
+        os.Mkdir("~/.godht", 0755)
         f,_ = os.Open("~/.godht/private_key", os.O_WRONLY, 0644)
         fmt.Printf("Generating key... \n")
-        pk,_ := GenerateKey(rand.Reader, 2048)
-        pkdata := MarshalPKCS1PrivateKey(pk)
+        pk,_ := rsa.GenerateKey(rand.Reader, 2048)
+        pkdata := x509.MarshalPKCS1PrivateKey(pk)
         f.Write(pkdata)
         f.Close()
         f,_ = os.Open("~/.godht/private_key", os.O_RDONLY, 0666)
     }
-    fi := os.Stat("~/.godht/private_key")
+    fi,_ := os.Stat("~/.godht/private_key")
     size := int(fi.Size)
-    pkdata s:= make([]byte, size)
+    pkdata := make([]byte, size)
     f.Read(pkdata)
 
-    keypair:=  x509.ParsePKCS1PrivateKey(pkdata)
+    keypair,_ :=  x509.ParsePKCS1PrivateKey(pkdata)
     this.Keypair = keypair
     /*
     //Find out if reachable
@@ -543,10 +536,10 @@ func (this *Node) Bootstrap(port int, knownhost *net.UDPAddr) bool {
     l.Listen()
     
     //Connect to known host
-    laddr,_ := net·ResolveUDPAddr("0.0.0.0:5000")
-    conn,_ := net·DialUDP("udp", laddr, knownhost)
+    laddr,_ := net.ResolveUDPAddr("0.0.0.0:5000")
+    conn,_ := net.DialUDP("udp", laddr, knownhost)
     c := NewConnHandler(this, conn)
-    c.FindNode
-    
+    go c.Start()
+    return true
 }
 
