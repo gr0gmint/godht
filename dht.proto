@@ -4,7 +4,6 @@ enum PktType {
     PING = 1;
     STORE = 2;
     FINDNODE = 3;
-    FINDVALUE = 4;
     CHECKREACHABILITY = 5;
     ANSWEROK = 50;
     ANSWERPONG = 51;
@@ -37,6 +36,7 @@ message Store {
 }
 message FindNode {
     required bytes key = 1;
+    required bool findvalue = 2;
 }
 
 message CheckReachability {
@@ -63,13 +63,8 @@ message AnswerOk {
 
 message AnswerFindNode {
     repeated NodeDescriptor nodes = 1;
-}
-
-message AnswerFindValie {
-    repeated NodeDescriptor nodes = 1;
     optional bytes value = 2;
 }
-
 enum Err {
     NEEDPUBLICKEY = 1;
     NOT_ACCEPTED = 2;
