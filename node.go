@@ -33,7 +33,7 @@ type Key []byte
 type InNodeDescriptor struct { /* In = internal */
     Addr *net.UDPAddr
     Behindnat bool
-    Nodeid []byte
+    Nodeid Key
     Session *UDPSession
     Publickey *rsa.PublicKey
     Bucket *Bucket
@@ -316,7 +316,9 @@ func (this *UDPSession) Start() {
                 fmt.Printf("Header isn't valid\n")
                 continue
             }
+
             if *header.Part >  0 {
+
                 if this.IdMap[*header.Msgid] == nil {
                     this.IdMap[*header.Msgid] = make(chan Buf)
                 }
@@ -328,11 +330,64 @@ func (this *UDPSession) Start() {
             
         }
     } ()
+    
+    
+    //(data []byte, t, id,part  int32, first,hmac,encrypted bool) bool 
     for {
-        this.Read(0, 0)
+        header, data := this.Read(0, 0)
+        fmt.Printf("Read a packet!\n")
+        
+        if header == nil { fmt.Printf("Header is nil :( \n"); continue }
+                                fmt.Printf("The packet is of type %s\n", PktType_name[int32(*header.Type)])
+        switch *header.Type {
+            case PktType_STORE:
+                p := NewStore()
+                proto.Unmarshal(data,p)
+            case PktType_FINDNODE:
+                p := NewFindNode()
+                proto.Unmarshal(data,p)
+                nodeid := p.Key
+                close := this.Node.FindCloseNodes(nodeid)
+                descriptors := make([]*NodeDescriptor, close.Len())
+                l:=close.Len()
+                for  i:=0; i < l; i++ {
+                    descriptors[i] = close.At(i).ToNodeDescriptor()
+                }
+                answer := NewAnswerFindNode()
+                answer.Nodes = descriptors
+                adata,_ := proto.Marshal(answer)
+                this.Send(adata, PktType_ANSWERNODES, *header.Msgid,1,false,false,false)
+            case PktType_PING:
+                a := NewPong()
+                adata,_ := proto.Marshal(a)
+                this.Send(adata, PktType_ANSWERPONG,*header.Msgid, 1, false, false,false)
+        }
     }
     
 }
+
+
+func (this *UDPSession) _doStore(header *Header, packet *Store) {
+    //This is the datastore mechanism.
+    //Returns a AnswerOk
+    
+}
+
+func DecodePublicKey(p *Publickey) *rsa.PublicKey {
+    pk := new(rsa.PublicKey)
+    pk.N = new(big.Int)
+    pk.N.SetBytes(p.Modulus) 
+    pk.E = int(*p.Exponent)
+    return pk                      
+}
+
+func EncodePublicKey(p *rsa.PublicKey) *Publickey {
+    pk := NewPublickey()
+    pk.Modulus = p.N.Bytes() 
+    pk.Exponent = proto.Int32(int32(p.E))
+    return pk                      
+}
+
 
 func (this *UDPSession) Read(msgid int32, timeout int64)(*Header, []byte) {
     h := NewHot(func(shared map[string]interface{}){     
@@ -362,16 +417,16 @@ func (this *UDPSession) Read(msgid int32, timeout int64)(*Header, []byte) {
                     if header.Hmac == nil || header.From == nil || header.From.Publickey == nil {
                         self.Answer<-hdr_n_data{nil,nil}
                         return
-                    } else {
+                    }
                         //Add nodedescriptor to bucket
-                       
+                        fmt.Printf("Adding node to bucket\n")
                         desc := new(InNodeDescriptor)
                         desc.Session = this
                         desc.Addr = this.Handler.Conn.RemoteAddr().(*net.UDPAddr)
                         desc.Behindnat = *header.From.Behindnat
                         desc.Nodeid = header.From.Nodeid
                         
-                        //Decode public key
+                        //Verify
                         pkmodulus := header.From.Publickey.Modulus
                         sha1hash := sha1.New()
                         sha1hash.Write(pkmodulus)
@@ -379,17 +434,13 @@ func (this *UDPSession) Read(msgid int32, timeout int64)(*Header, []byte) {
                             self.Answer<-hdr_n_data{nil,nil}
                             return
                         }
-                        pk := new(rsa.PublicKey)
-                        pk.N = new(big.Int)
-                        pk.N.SetBytes(header.From.Publickey.Modulus) 
-                        pk.E = int(*header.From.Publickey.Exponent)
+                        pk := DecodePublicKey(header.From.Publickey)
                         desc.Publickey = pk
-                        
                         if this.Node.AddNode(desc) {
                             this.RecpNode = desc
                             this.NodeIsAdded = true
                         }
-                    }
+                    
             
                 }
               if header.Isencrypted != nil {
@@ -414,6 +465,7 @@ func (this *UDPSession) Read(msgid int32, timeout int64)(*Header, []byte) {
                 }
             }
                         header,mdata,err := this.DecodePacket(data)
+                        if err != nil {fmt.Printf("E: %s\n", err) }
             if err != nil { self.Answer<-hdr_n_data{nil,nil}} else {
               self.Answer<-hdr_n_data{header,mdata}
             }
@@ -442,7 +494,9 @@ func (this *UDPSession) Send(data []byte, t, id,part  int32, first,hmac,encrypte
     return true
 }
 
-func (this *UDPSession) Ping() bool {
+//function prefix *RPC means it is a remote call.. Not remotely callable 
+
+func (this *UDPSession) Ping() bool { 
     msgid := NewMsgId()
     ping_packet := NewPing()
     ping_data,_ := proto.Marshal(ping_packet)
@@ -477,13 +531,78 @@ func (this *UDPSession) _findNode(key Key, findvalue bool) *AnswerFindNode{
     } 
     return nil
 }
-func (this *UDPSession) FindNode(key Key) {
+
+
+
+/*
+message NodeDescriptor { //Like a "from" field
+    required int32 udpport = 1;
+    required bool behindnat = 2;
+    required bytes nodeid = 3;
+    optional Publickey publickey = 4;
+    optional bytes ipaddr = 5;
+}
+*/
+/*
+
+type InNodeDescriptor struct {
+    Addr *net.UDPAddr
+    Behindnat bool
+    Nodeid []byte
+    Session *UDPSession
+    Publickey *rsa.PublicKey
+    Bucket *Bucket
+}
+*/
+func (this *NodeDescriptor) ToInNodeDescriptor() *InNodeDescriptor {
+    innode := new(InNodeDescriptor)
+    innode.Behindnat = *this.Behindnat
+    innode.Nodeid = make(Key, B/8)
+    copy(innode.Nodeid, this.Nodeid)
+    if this.Publickey != nil {
+        innode.Publickey = DecodePublicKey(this.Publickey)
+    }
+    innode.Addr = new(net.UDPAddr)
+    innode.Addr.Port = int(*this.Udpport)
+    if this.Ipaddr != nil {
+        innode.Addr.IP = net.IPv4 (this.Ipaddr[0], this.Ipaddr[1], this.Ipaddr[2], this.Ipaddr[3])
+    }
+    return innode
+}
+
+func (this *InNodeDescriptor) ToNodeDescriptor() *NodeDescriptor {
+    node := NewNodeDescriptor()
+    node.Behindnat = proto.Bool(this.Behindnat)
+    node.Nodeid = make(Key, B/8)
+    copy(node.Nodeid, this.Nodeid)
+    if this.Publickey != nil {
+        node.Publickey = EncodePublicKey(this.Publickey)
+    }
+    node.Udpport = proto.Int(this.Addr.Port)
+    node.Ipaddr = this.Addr.IP
+    return node        
+}
+    
+func (this *UDPSession) FindNode(key Key) *Bucket {
+    answer := this._findNode(key, false)
+    if answer != nil {
+        for _,v := range answer.Nodes {
+            innode := v.ToInNodeDescriptor()
+            this.Node.AddNode(innode)
+        }
+    }
+    return nil
+} 
+
+
+func (this *UDPSession) IterativeFindNode(key Key) *Bucket {
     answer := this._findNode(key, false)
     if answer != nil {
         
     }
-    
+    return nil
 } 
+
 
 
 func (this *UDPSession) Store(key Key, value []byte) bool {
