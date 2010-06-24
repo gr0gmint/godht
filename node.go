@@ -42,12 +42,13 @@ type InNodeDescriptor struct { /* In = internal */
 
 type Bucket struct {
     Node *Node
-    v Vector
+    v *Vector
 }
     
 func NewBucket(n *Node) *Bucket {
     b := new(Bucket)
     b.Node = n
+    b.v = new(Vector)
     return b
 }
 func (this *Bucket) Len() int {
@@ -81,7 +82,9 @@ func (this *Bucket) Iter()  chan *InNodeDescriptor {
     go func(){
         for {
             if closed(ch) { close(nodech); return }
-            nodech <- (<-ch).(*InNodeDescriptor)
+            m := (<-ch)
+            if m == nil {close(nodech); return }
+            nodech <- m.(*InNodeDescriptor)
         }
     }()
     return nodech
@@ -105,7 +108,7 @@ type UDPHandler struct {
     Node *Node
     HotRoutine
     Conn *net.UDPConn
-    FromMap map[*net.UDPAddr]chan Buf
+    FromMap map[string]chan Buf
     SessionChan chan *UDPSession
 }
 func NewUDPHandler(port int, node *Node) *UDPHandler {
@@ -113,7 +116,7 @@ func NewUDPHandler(port int, node *Node) *UDPHandler {
     u := new(UDPHandler)
     laddr,_ := net.ResolveUDPAddr(fmt.Sprintf("0.0.0.0:%d",port))
     u.Conn,_ = net.ListenUDP("udp",laddr) 
-    u.FromMap = make(map[*net.UDPAddr]chan Buf)
+    u.FromMap = make(map[string]chan Buf)
     u.SessionChan = make(chan *UDPSession)
     u.Node = node
     return u
@@ -129,6 +132,7 @@ type UDPSession struct {
     Default chan Buf
     FirstPacketSent bool //If the repicient needs the publickey
     NodeIsAdded bool //If the node is added to bucket
+    First bool //Keep track of the first packet sent
 }
 
 
@@ -231,16 +235,21 @@ func (this *UDPSession) DecodePacket(data Buf) (*Header,[]byte, os.Error) {
     newdata := make(Buf, datalen)
     copy(newdata,data[8+hdrlen:8+hdrlen+datalen])
     
-    
+    fmt.Printf("Returning healthy data\n")
     return header, newdata,nil
 }
  
-func (this *UDPSession) EncodePacket(data []byte, t,id,part int32, first,hmac,encrypted bool) []byte {
+func (this *UDPSession) EncodePacket(data []byte, t,id,part int32, hmac,encrypted bool) []byte {
         newt := NewPktType(t)
         header := NewHeader()
         header.Type = newt
         header.Msgid = proto.Int32(id)
         header.Part = proto.Int32(part)
+        if this.First {
+            this.First = false
+            //Include publickey
+            header.From = this.Node.Descriptor()
+        }
         hdrdata,err := proto.Marshal(header)
         if err != nil {
             fmt.Printf("%s\n", err)
@@ -262,7 +271,10 @@ func NewUDPSession(raddr *net.UDPAddr, node *Node, udphandler *UDPHandler) *UDPS
     c.RAddr =  raddr
     c.Handler = udphandler
     c.Node = node
-        go c.HotStart()
+    c.First = true
+ 
+    c.Handler.FromMap[raddr.String()] = make(chan Buf)
+    go c.HotStart()
     return c
 }
 
@@ -271,22 +283,24 @@ func (this *UDPHandler) Start() {
     fmt.Printf("UDPHandler started\n")
     this.Buffer = make(Buf, 10000)
     this.SessionChan = make(chan *UDPSession)
-        for {
+        go func() { for {
             n, addr, err := this.Conn.ReadFromUDP(this.Buffer)
+            saddr := addr.String()
             if err != nil {fmt.Printf("%s", err); break}
             newbuf := make(Buf, n)
             copy(newbuf, this.Buffer)
-            fmt.Printf("Checking if FromMap[addr] is nil\n")
-            if this.FromMap[addr] == nil {
-                this.FromMap[addr] = make(chan Buf)
+            fmt.Printf("Checking if FromMap[saddr] is nil\n")
+            if this.FromMap[saddr] == nil {
+                this.FromMap[saddr] = make(chan Buf)
                 fmt.Printf("Created a chan\n")
                 session := NewUDPSession(addr, this.Node, this)
                 go session.Start()
                 go func() {this.SessionChan <- session} ()
             }
-                go func() { this.FromMap[addr]<-newbuf}()
+                go func() { this.FromMap[saddr]<-newbuf}()
             
         }
+        }()
     
 }
 
@@ -299,30 +313,32 @@ func (this *UDPHandler) GetSession() *UDPSession {
 func (this *UDPSession) Start() {
     fmt.Printf("UDPSession started\n")
     this.Default = make(chan Buf)
-    if this.Handler.FromMap[this.RAddr] == nil {
-        this.Handler.FromMap[this.RAddr] = make (chan Buf)
+    saddr := this.RAddr.String()
+    if this.Handler.FromMap[saddr] == nil {
+        this.Handler.FromMap[saddr] = make (chan Buf)
     }
-    packetchan := this.Handler.FromMap[this.RAddr]
+    this.IdMap = make(map[int32]chan Buf)
+    packetchan := this.Handler.FromMap[saddr]
     go func() {
         for {
             packet := <-packetchan
             if packet == nil {fmt.Printf("Error reading from UDPHandler"); break }
-            header,data,err := this.DecodePacket(packet)
+            header,_,err := this.DecodePacket(packet)
             if err != nil {
                 fmt.Printf("E: %s\n", err)
             }
-            fmt.Printf("Got a packet: %s\n", data)
+            fmt.Printf("Got a packet\n")
+            fmt.Printf("Received Msgid: %d ... Part = %d\n", *header.Msgid, *header.Part)
             if header == nil {
                 fmt.Printf("Header isn't valid\n")
                 continue
             }
 
             if *header.Part >  0 {
-
-                if this.IdMap[*header.Msgid] == nil {
+                if this.IdMap[*header.Msgid] == nil{
                     this.IdMap[*header.Msgid] = make(chan Buf)
                 }
-                go func() { this.IdMap[*header.Msgid]<-packet}()
+                go func() { fmt.Printf("this.IdMap[%d]<-packet\n", *header.Msgid); this.IdMap[*header.Msgid]<-packet}()
             } else {
                 go func() { this.Default <- packet }()
             }
@@ -350,17 +366,18 @@ func (this *UDPSession) Start() {
                 close := this.Node.FindCloseNodes(nodeid)
                 descriptors := make([]*NodeDescriptor, close.Len())
                 l:=close.Len()
+                fmt.Printf("There are %d close nodes\n", l)
                 for  i:=0; i < l; i++ {
                     descriptors[i] = close.At(i).ToNodeDescriptor()
                 }
                 answer := NewAnswerFindNode()
                 answer.Nodes = descriptors
                 adata,_ := proto.Marshal(answer)
-                this.Send(adata, PktType_ANSWERNODES, *header.Msgid,1,false,false,false)
+                this.Send(adata, PktType_ANSWERNODES, *header.Msgid,1,false,false)
             case PktType_PING:
                 a := NewPong()
                 adata,_ := proto.Marshal(a)
-                this.Send(adata, PktType_ANSWERPONG,*header.Msgid, 1, false, false,false)
+                this.Send(adata, PktType_ANSWERPONG,*header.Msgid, 1, false,false)
         }
     }
     
@@ -389,40 +406,56 @@ func EncodePublicKey(p *rsa.PublicKey) *Publickey {
 }
 
 
+func (this *Node) Descriptor() *NodeDescriptor {
+    n := NewNodeDescriptor()
+    n.Udpport = proto.Int32(int32(this.Listenport))
+    n.Nodeid = this.Nodeid
+    n.Behindnat = proto.Bool(this.Reachable)
+    n.Publickey = EncodePublicKey(&this.Keypair.PublicKey)
+    return n
+}
 func (this *UDPSession) Read(msgid int32, timeout int64)(*Header, []byte) {
-    h := NewHot(func(shared map[string]interface{}){     
+    /*h := NewHot(func(shared map[string]interface{}){    
+        defer func() {fmt.Printf("returning from read hot\n")}()
+        
         self := shared["self"].(*GenericHot)
+        */
         var data Buf
         var ticker *time.Ticker
         if timeout != 0  {
             ticker = time.NewTicker(timeout)
         }
+        fmt.Printf("Trying to read with msgid = %d\n", msgid)
         if msgid == 0 {
             if timeout != 0 {
             select {
                 case data = <-this.Default:
                 case <-ticker.C:
                     ticker.Stop()
-                    self.Answer<-hdr_n_data{nil,nil}
-                    return
+                    fmt.Printf("Ticker problem. Timeout = %d\n", timeout)
+                    //self.Answer<-hdr_n_data{nil,nil}
+                    return nil,nil
+                   
             }
             } else {
                 data = <-this.Default
             }
             header,mdata,err := this.DecodePacket(data)
-            if err != nil { self.Answer<-hdr_n_data{nil,nil}} else {
+            fmt.Printf("Read packet with msgid = %d\n", *header.Msgid)
+            if err != nil { fmt.Printf("E: %s\n", err); /* self.Answer<-hdr_n_data{nil,nil}*/ return nil,nil} else {
               //If this is some of the first packets received  - needs perhaps to be added to bucket
                 if !this.NodeIsAdded {
                     //HMAC and publickey and nodedescriptor objects are mandatory for this first header. If not included, ignore
-                    if header.Hmac == nil || header.From == nil || header.From.Publickey == nil {
-                        self.Answer<-hdr_n_data{nil,nil}
-                        return
+                    if header.From == nil {
+                        //self.Answer<-hdr_n_data{nil,nil}
+                        return nil,nil
+                        //return
                     }
                         //Add nodedescriptor to bucket
                         fmt.Printf("Adding node to bucket\n")
                         desc := new(InNodeDescriptor)
                         desc.Session = this
-                        desc.Addr = this.Handler.Conn.RemoteAddr().(*net.UDPAddr)
+                        desc.Addr = this.RAddr
                         desc.Behindnat = *header.From.Behindnat
                         desc.Nodeid = header.From.Nodeid
                         
@@ -431,8 +464,12 @@ func (this *UDPSession) Read(msgid int32, timeout int64)(*Header, []byte) {
                         sha1hash := sha1.New()
                         sha1hash.Write(pkmodulus)
                         if bytes.Compare(sha1hash.Sum(), desc.Nodeid) != 0 {//If public key or nodeid is wrong
-                            self.Answer<-hdr_n_data{nil,nil}
-                            return
+                            fmt.Printf("Verification failed\nSHA1 = %x\nNodeid = %x\n", sha1hash.Sum(), desc.Nodeid)
+                            //self.Answer<-hdr_n_data{nil,nil}
+                            //return
+                            return nil, nil
+                        } else {
+                            fmt.Printf("Verification succeded!!\nSHA1 = %x\nNodeid = %x\n", sha1hash.Sum(), desc.Nodeid)
                         }
                         pk := DecodePublicKey(header.From.Publickey)
                         desc.Publickey = pk
@@ -448,37 +485,48 @@ func (this *UDPSession) Read(msgid int32, timeout int64)(*Header, []byte) {
                 //
                 //
               }
-              self.Answer<-hdr_n_data{header,mdata}
+              fmt.Printf("Sending answer\n")
+              return header,mdata
+              return nil,nil //self.Answer<-hdr_n_data{header,mdata}
             }
-            return
         } else {
-            if this.IdMap[msgid] == nil { this.IdMap[msgid] = make(chan Buf) }
+            if this.IdMap[msgid] == nil { fmt.Printf("make(chan Buf)\n"); this.IdMap[msgid] = make(chan Buf) }
+            fmt.Printf("data =  <-this.IdMap[%d]\n", msgid)
             if timeout == 0 {
+                fmt.Printf("Querying this.IdMap[msgid]\n")
                 data =  <-this.IdMap[msgid]
+                
             }  else {
                 select {
                     case data =  <-this.IdMap[msgid]:
                     case <-ticker.C:
                         ticker.Stop()
-                        self.Answer<-hdr_n_data{nil,nil}
-                        return 
+                        //self.Answer<-hdr_n_data{nil,nil}
+                        
+                        return nil,nil 
                 }
             }
-                        header,mdata,err := this.DecodePacket(data)
-                        if err != nil {fmt.Printf("E: %s\n", err) }
-            if err != nil { self.Answer<-hdr_n_data{nil,nil}} else {
-              self.Answer<-hdr_n_data{header,mdata}
+            header,mdata,err := this.DecodePacket(data)
+            
+            fmt.Printf("Read packet with msgid = %d\n", *header.Msgid)
+            if err != nil {fmt.Printf("E: %s\n", err) }
+            if err != nil { return nil,nil} else {
+              //self.Answer<-hdr_n_data{header,mdata}
+              return header,mdata
             }
-            return
         }   
-        
+        /*
     })
     this.QueryHot(h)
+    *//*
     answer:=(<-h.Answer).(hdr_n_data)
    return answer.header,answer.data
+   */
+   
+            return nil,nil
 }
 
-func (this *UDPSession) Send(data []byte, t, id,part  int32, first,hmac,encrypted bool) bool {
+func (this *UDPSession) Send(data []byte, t, id,part  int32,hmac,encrypted bool) bool {
     //Check if we have publickey
 
     
@@ -488,19 +536,18 @@ func (this *UDPSession) Send(data []byte, t, id,part  int32, first,hmac,encrypte
             return false
         } 
     }
-
-    pdata := this.EncodePacket(data,t,id,part,first,hmac,encrypted) 
+    pdata := this.EncodePacket(data,t,id,part,hmac,encrypted)
+    fmt.Print("Sending data(%d): %s\n", len(pdata), pdata) 
+    fmt.Printf("Sending with msgid: %d\n", id)
     this.Handler.Conn.WriteTo(pdata,this.RAddr)   
     return true
 }
-
-//function prefix *RPC means it is a remote call.. Not remotely callable 
 
 func (this *UDPSession) Ping() bool { 
     msgid := NewMsgId()
     ping_packet := NewPing()
     ping_data,_ := proto.Marshal(ping_packet)
-    this.Send(ping_data, PktType_PING, msgid, 0,false, false,false)
+    this.Send(ping_data, PktType_PING, msgid, 0, false,false)
     header,data := this.Read(msgid,2000000000)
     if header == nil || data == nil {
         return false
@@ -519,10 +566,12 @@ func (this *UDPSession) _findNode(key Key, findvalue bool) *AnswerFindNode{
     m.Findvalue = proto.Bool(findvalue)
     data, _ := proto.Marshal(m)
     fmt.Printf("Sending FINDNODE packet\n")
-    this.Send(data, PktType_FINDNODE, msgid, 0, false,true,false)
+    this.Send(data, PktType_FINDNODE, msgid, 0, true,false)
     fmt.Printf("Waiting for answer....\n")
+    fmt.Printf("_findnode·msgid = %d\n", msgid)
     header,data := this.Read(msgid,0 )
     if *header.Type == PktType_ANSWERNODES {
+        fmt.Printf("Got an answer!\n")
         answer := NewAnswerFindNode()
         err :=proto.Unmarshal(data,answer)
         if err != nil {
@@ -613,7 +662,7 @@ func (this *UDPSession) Store(key Key, value []byte) bool {
     if len(value) > 3000 {  //Split it up in multiple packets 
     } else {
         mdata,_ := proto.Marshal(m)
-        this.Send(mdata,PktType_STORE, msgid, 0,false,true,false)
+        this.Send(mdata,PktType_STORE, msgid, 0,true,false)
         if this.IsAccepted(msgid) {
             return true
         }
@@ -642,13 +691,16 @@ func (this *Node) FindCloseNodes(key Key) *Bucket {
     closenodes := NewBucket(this)
     var ichan chan *InNodeDescriptor
     var first int
-    var leap int
-    var goleft bool = true
+    //var leap int
+    //var goleft bool = true
     
     first = int(BucketNo(distance))
     ichan = this.Buckets[first].Iter()
     for closenodes.Len() < K {
-        if closed(ichan) {
+        m := <-ichan
+        if m == nil {break}
+        /*
+        if m == nil {
             if goleft {
                 if first - leap <= 0 {
                     goleft = !goleft
@@ -672,9 +724,10 @@ func (this *Node) FindCloseNodes(key Key) *Bucket {
                 }
             }
             
-        }
-        closenodes.Push(<-ichan)
-
+        } else {
+        */
+        closenodes.Push(m)
+        //}
     }
     return closenodes
 }
@@ -683,7 +736,9 @@ func (this *Node) AddNode(node *InNodeDescriptor) bool {
 
         distance := XOR(this.Nodeid,node.Nodeid)
         no := int(BucketNo(distance))
-
+        if this.Buckets[no] == nil {
+            this.Buckets[no] = NewBucket(this)
+        }
         
         if this.Buckets[no].Len() >= K  {
             if !(this.Buckets[no].At(0).Session.Ping()) {
@@ -735,7 +790,10 @@ func (this *Node) Bootstrap(port int, known string) bool {
     fmt.Printf("Unmarshalled the keypair\n")
     this.Keypair = keypair
     
-    
+    sha1hash := sha1.New()
+    sha1hash.Write(this.Keypair.PublicKey.N.Bytes())
+    this.Nodeid = Key(sha1hash.Sum())
+    this.Reachable = true
     /*
     //Find out if reachable
     this.Reachable = true
