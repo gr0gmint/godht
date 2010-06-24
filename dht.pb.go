@@ -69,6 +69,7 @@ type Header struct {
 	Hmac	[]byte	"PB(bytes,5,opt,name=hmac)"
 	From	*NodeDescriptor	"PB(bytes,6,opt,name=from)"
 	Isencrypted	*bool	"PB(varint,7,opt,name=isencrypted)"
+	Knowsyou	*bool	"PB(varint,8,req,name=knowsyou)"
 	XXX_unrecognized	[]byte
 }
 func (this *Header) Reset() {

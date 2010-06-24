@@ -130,7 +130,7 @@ type UDPSession struct {
     RecpNode *InNodeDescriptor
     IdMap map[int32]chan Buf
     Default chan Buf
-    FirstPacketSent bool //If the repicient needs the publickey
+    NeedToSendDesc bool //If the repicient needs the publickey
     NodeIsAdded bool //If the node is added to bucket
     First bool //Keep track of the first packet sent
 }
@@ -245,8 +245,8 @@ func (this *UDPSession) EncodePacket(data []byte, t,id,part int32, hmac,encrypte
         header.Type = newt
         header.Msgid = proto.Int32(id)
         header.Part = proto.Int32(part)
-        if this.First {
-            this.First = false
+        header.Knowsyou = proto.Bool(this.NodeIsAdded)
+        if this.NeedToSendDesc {
             //Include publickey
             header.From = this.Node.Descriptor()
         }
@@ -328,7 +328,7 @@ func (this *UDPSession) Start() {
                 fmt.Printf("E: %s\n", err)
             }
             fmt.Printf("Got a packet\n")
-            fmt.Printf("Received Msgid: %d ... Part = %d\n", *header.Msgid, *header.Part)
+            fmt.Printf("Received Msgid: %d ... Part = %d, type =%s \n", *header.Msgid, *header.Part, PktType_name[int32(*header.Type)])
             if header == nil {
                 fmt.Printf("Header isn't valid\n")
                 continue
@@ -372,11 +372,13 @@ func (this *UDPSession) Start() {
                 }
                 answer := NewAnswerFindNode()
                 answer.Nodes = descriptors
-                adata,_ := proto.Marshal(answer)
+                adata,err := proto.Marshal(answer)
+                if err != nil { fmt.Printf("E: %s\n", err) }
                 this.Send(adata, PktType_ANSWERNODES, *header.Msgid,1,false,false)
             case PktType_PING:
                 a := NewPong()
-                adata,_ := proto.Marshal(a)
+                adata,err := proto.Marshal(a)
+                if err != nil  {fmt.Printf("E: %s\n", err)}
                 this.Send(adata, PktType_ANSWERPONG,*header.Msgid, 1, false,false)
         }
     }
@@ -441,16 +443,21 @@ func (this *UDPSession) Read(msgid int32, timeout int64)(*Header, []byte) {
                 data = <-this.Default
             }
             header,mdata,err := this.DecodePacket(data)
-            fmt.Printf("Read packet with msgid = %d\n", *header.Msgid)
-            if err != nil { fmt.Printf("E: %s\n", err); /* self.Answer<-hdr_n_data{nil,nil}*/ return nil,nil} else {
+            
+            //Set the NeedToSendDesc flag, if "Knowsyou" is set in packet
+            if *header.Knowsyou { this.NeedToSendDesc = false } else { this.NeedToSendDesc = true }
+            
+            fmt.Printf("Read packet with msgid = %d, and type=%s\n", *header.Msgid, PktType_name[int32(*header.Type)])
+            if err != nil { fmt.Printf("E: %s\n", err); /* self.Answer<-hdr_n_data{nil,nil}*/ return header,mdata} else {
               //If this is some of the first packets received  - needs perhaps to be added to bucket
                 if !this.NodeIsAdded {
+                    fmt.Printf("I do not recognize this node for some reason.\n")
                     //HMAC and publickey and nodedescriptor objects are mandatory for this first header. If not included, ignore
                     if header.From == nil {
                         //self.Answer<-hdr_n_data{nil,nil}
                         return nil,nil
                         //return
-                    }
+                    } 
                         //Add nodedescriptor to bucket
                         fmt.Printf("Adding node to bucket\n")
                         desc := new(InNodeDescriptor)
@@ -487,7 +494,6 @@ func (this *UDPSession) Read(msgid int32, timeout int64)(*Header, []byte) {
               }
               fmt.Printf("Sending answer\n")
               return header,mdata
-              return nil,nil //self.Answer<-hdr_n_data{header,mdata}
             }
         } else {
             if this.IdMap[msgid] == nil { fmt.Printf("make(chan Buf)\n"); this.IdMap[msgid] = make(chan Buf) }
@@ -537,7 +543,6 @@ func (this *UDPSession) Send(data []byte, t, id,part  int32,hmac,encrypted bool)
         } 
     }
     pdata := this.EncodePacket(data,t,id,part,hmac,encrypted)
-    fmt.Print("Sending data(%d): %s\n", len(pdata), pdata) 
     fmt.Printf("Sending with msgid: %d\n", id)
     this.Handler.Conn.WriteTo(pdata,this.RAddr)   
     return true
@@ -570,13 +575,12 @@ func (this *UDPSession) _findNode(key Key, findvalue bool) *AnswerFindNode{
     fmt.Printf("Waiting for answer....\n")
     fmt.Printf("_findnode·msgid = %d\n", msgid)
     header,data := this.Read(msgid,0 )
+    fmt.Printf("Answer is of type: %s\n\n", PktType_name[int32(*header.Type)])
     if *header.Type == PktType_ANSWERNODES {
         fmt.Printf("Got an answer!\n")
         answer := NewAnswerFindNode()
-        err :=proto.Unmarshal(data,answer)
-        if err != nil {
-        return answer
-        }
+        proto.Unmarshal(data,answer)
+        return answer 
     } 
     return nil
 }
@@ -603,7 +607,7 @@ type InNodeDescriptor struct {
     Bucket *Bucket
 }
 */
-func (this *NodeDescriptor) ToInNodeDescriptor() *InNodeDescriptor {
+func (this *NodeDescriptor) ToInNodeDescriptor(session *UDPSession) *InNodeDescriptor {
     innode := new(InNodeDescriptor)
     innode.Behindnat = *this.Behindnat
     innode.Nodeid = make(Key, B/8)
@@ -613,6 +617,7 @@ func (this *NodeDescriptor) ToInNodeDescriptor() *InNodeDescriptor {
     }
     innode.Addr = new(net.UDPAddr)
     innode.Addr.Port = int(*this.Udpport)
+    innode.Session = session
     if this.Ipaddr != nil {
         innode.Addr.IP = net.IPv4 (this.Ipaddr[0], this.Ipaddr[1], this.Ipaddr[2], this.Ipaddr[3])
     }
@@ -634,15 +639,16 @@ func (this *InNodeDescriptor) ToNodeDescriptor() *NodeDescriptor {
     
 func (this *UDPSession) FindNode(key Key) *Bucket {
     answer := this._findNode(key, false)
+    fmt.Printf("Got the answer: %s\n", answer)
     if answer != nil {
+        fmt.Printf("Trying to add the nodes\n")
         for _,v := range answer.Nodes {
-            innode := v.ToInNodeDescriptor()
+            innode := v.ToInNodeDescriptor(this)
             this.Node.AddNode(innode)
         }
     }
     return nil
-} 
-
+}
 
 func (this *UDPSession) IterativeFindNode(key Key) *Bucket {
     answer := this._findNode(key, false)
@@ -691,45 +697,33 @@ func (this *Node) FindCloseNodes(key Key) *Bucket {
     closenodes := NewBucket(this)
     var ichan chan *InNodeDescriptor
     var first int
-    //var leap int
-    //var goleft bool = true
+    var leap int = 1
     
     first = int(BucketNo(distance))
     ichan = this.Buckets[first].Iter()
     for closenodes.Len() < K {
+        if (first + leap) >= 159 &&  ( first - leap) <= 0 {
+           break
+        }
+        if closed(ichan) { leap++; continue} 
         m := <-ichan
-        if m == nil {break}
-        /*
         if m == nil {
-            if goleft {
-                if first - leap <= 0 {
-                    goleft = !goleft
-                    continue
-                }
-                ichan = this.Buckets[first - leap].Iter()
-                
-                if first+leap < 159 {
-                    goleft = !goleft
-                }
-            }
-            if !goleft {
-                if first + leap >= 159 {
-                    goleft = !goleft
-                    continue
-                }
+
+            if  first+leap <= 159 && this.Buckets[first + leap] != nil {
                 ichan = this.Buckets[first + leap].Iter()
-                
-                if first-leap > 0 {
-                    goleft = !goleft
-                }
             }
-            
+            if first - leap >= 0 && this.Buckets[first - leap] != nil{
+                ichan = this.Buckets[first - leap].Iter()
+            }
+            leap ++
         } else {
-        */
         closenodes.Push(m)
-        //}
+        }
     }
     return closenodes
+}
+func (this *Node) IterativeFindNode(key Key) {
+    
 }
 
 func (this *Node) AddNode(node *InNodeDescriptor) bool {
@@ -741,13 +735,18 @@ func (this *Node) AddNode(node *InNodeDescriptor) bool {
         }
         
         if this.Buckets[no].Len() >= K  {
+            fmt.Printf("BUCKET IS FULL - TRYING TO PING\n")
+            fmt.Printf("this.Buckets[no].At(0).Session.RAddr =%s\n", this.Buckets[no].At(0).Session.RAddr)
             if !(this.Buckets[no].At(0).Session.Ping()) {
-                return false
+                this.Buckets[no].Cut(0,1)
+
+            } else {
+
+                                    return false
             }
-            return true
-        } 
-        this.Buckets[no].Push(node)
-        return true
+        }
+     this.Buckets[no].Push(node)
+        return false
 
 }
 
@@ -826,6 +825,7 @@ func (this *Node) Bootstrap(port int, known string) bool {
     c := NewUDPSession(knownhost,this,udphandler)
     c.Node = this
     c.NodeIsAdded = false
+    c.NeedToSendDesc = true
     go c.Start()
     go c.FindNode(this.Nodeid) //Should be iterative. But not for now
     return true

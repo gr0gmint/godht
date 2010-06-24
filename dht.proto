@@ -17,6 +17,7 @@ message Header {
     optional bytes hmac = 5;
     optional NodeDescriptor from = 6;
     optional bool isencrypted = 7;
+    required bool knowsyou = 8;
 }
 
 

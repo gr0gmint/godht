@@ -4,6 +4,8 @@
 
 include $(GOROOT)/src/Make.$(GOARCH)
 
+
+
 TARG=dht
 GOFILES=\
 	node.go\
@@ -13,3 +15,10 @@ GOFILES=\
 include $(GOROOT)/src/Make.pkg
 dht.pb.go:
 	protoc --go_out=. dht.proto
+
+example: 
+	8g example.go
+	8l example.8
+
+
+joe: all install example
