@@ -18,6 +18,7 @@ message Header {
     optional NodeDescriptor from = 6;
     optional bool isencrypted = 7;
     required bool knowsyou = 8;
+    optional NodeDescriptor relayedfrom = 9;
 }
 
 

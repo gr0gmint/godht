@@ -409,8 +409,10 @@ func EncodePublicKey(p *rsa.PublicKey) *Publickey {
 
 
 func (this *Node) Descriptor() *NodeDescriptor {
+
+
     n := NewNodeDescriptor()
-    n.Udpport = proto.Int32(int32(this.Listenport))
+        n.Udpport = proto.Int32(int32(this.Listenport))
     n.Nodeid = this.Nodeid
     n.Behindnat = proto.Bool(this.Reachable)
     n.Publickey = EncodePublicKey(&this.Keypair.PublicKey)
@@ -640,23 +642,56 @@ func (this *InNodeDescriptor) ToNodeDescriptor() *NodeDescriptor {
 func (this *UDPSession) FindNode(key Key) *Bucket {
     answer := this._findNode(key, false)
     fmt.Printf("Got the answer: %s\n", answer)
+    nodes := NewBucket(this.Node)
     if answer != nil {
         fmt.Printf("Trying to add the nodes\n")
         for _,v := range answer.Nodes {
             innode := v.ToInNodeDescriptor(this)
+            nodes.Push(innode)
             this.Node.AddNode(innode)
         }
     }
-    return nil
+    return nodes
+}
+func (this *UDPSession) FindValue(key Key) (*Bucket, []byte) {
+    answer := this._findNode(key, true)
+    fmt.Printf("Got the answer: %s\n", answer)
+    nodes := NewBucket(this.Node)
+    if answer != nil {
+        if answer.Value != nil {
+            return nil,answer.Value
+        }
+        fmt.Printf("Trying to add the nodes\n")
+        for _,v := range answer.Nodes {
+            innode := v.ToInNodeDescriptor(this)
+            nodes.Push(innode)
+            this.Node.AddNode(innode)
+        }
+    }
+    return nodes,nil
 }
 
-func (this *UDPSession) IterativeFindNode(key Key) *Bucket {
-    answer := this._findNode(key, false)
-    if answer != nil {
+func (this *UDPSession) IterativeFindNode(key Key, backchan chan *Bucket) *Bucket {
+/*
+    h := NewHot(func(shared map[string]interface{}){
+        self := shared["self"].(*GenericHot)
+    })
+    this.QueryHot(h)
+    answer:=<-h.Answer
+    */
+    if backchan == nil {
         
     }
-    return nil
-} 
+    nodes := this.FindNode(key)
+    ch := nodes.Iter()
+    for i:= 0; i < A; i++ {
+        if closed(ch) { break }
+        node := <-ch
+        if node == nil { break }
+        go node.Session.IterativeFindNode()
+    }    
+    
+}
 
 
 
@@ -723,31 +758,61 @@ func (this *Node) FindCloseNodes(key Key) *Bucket {
     return closenodes
 }
 func (this *Node) IterativeFindNode(key Key) {
+    ch := make(chan *Bucket)
+    answer := this.FindNode(key)
+}
+func (this *Node) HasNode(key Key {
+    distance := XOR(this.Nodeid,key)
+    no := int(BucketNo(distance))
+    var exists = false
+    ch := this.Buckets[no].Iter() 
+    for {
+        if closed(ch) {break }
+        n := <-ch
+        if n == nil {break }
+        if bytes.Compare(node.Nodeid, n.Nodeid) == 0 {exists = true; break}
+    }
+    if exists {
+            return true
+        }
+    return false
     
 }
-
-func (this *Node) AddNode(node *InNodeDescriptor) bool {
-
+func (this *Node) AddNode(node *InNodeDescriptor) bool  {
+    h := NewHot(func(shared map[string]interface{}){
+        self := shared["self"].(*GenericHot)
         distance := XOR(this.Nodeid,node.Nodeid)
         no := int(BucketNo(distance))
         if this.Buckets[no] == nil {
             this.Buckets[no] = NewBucket(this)
         }
-        
+        if this.HasNode(node.Nodeid) {
+            self.Answer <- false
+            return
+        }
         if this.Buckets[no].Len() >= K  {
             fmt.Printf("BUCKET IS FULL - TRYING TO PING\n")
             fmt.Printf("this.Buckets[no].At(0).Session.RAddr =%s\n", this.Buckets[no].At(0).Session.RAddr)
-            if !(this.Buckets[no].At(0).Session.Ping()) {
-                this.Buckets[no].Cut(0,1)
-
-            } else {
-
-                                    return false
-            }
+            go func() {
+                if !(this.Buckets[no].At(0).Session.Ping()) {
+                    this.Buckets[no].Cut(0,1)
+                     this.Buckets[no].Push(node)
+                     self.Answer<-true
+                } else {
+                     self.Answer<-false 
+                }
+            }()
+        } else {
+                 this.Buckets[no].Push(node)
         }
-     this.Buckets[no].Push(node)
-        return false
+        
+        self.Answer<-false
 
+ 
+    })
+    this.QueryHot(h)
+    answer:=(<-h.Answer).(bool)
+    return answer
 }
 
 

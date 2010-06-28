@@ -3,7 +3,7 @@
 
 package dht
 
-import proto "net/proto2/go/proto"
+import proto "goprotobuf.googlecode.com/hg/proto"
 
 // Reference proto import to suppress error if it's not otherwise used.
 var _ = proto.GetString
@@ -70,6 +70,7 @@ type Header struct {
 	From	*NodeDescriptor	"PB(bytes,6,opt,name=from)"
 	Isencrypted	*bool	"PB(varint,7,opt,name=isencrypted)"
 	Knowsyou	*bool	"PB(varint,8,req,name=knowsyou)"
+	Relayedfrom	*NodeDescriptor	"PB(bytes,9,opt,name=relayedfrom)"
 	XXX_unrecognized	[]byte
 }
 func (this *Header) Reset() {

@@ -4,7 +4,7 @@ package dht
     h := NewHot(func(shared map[string]interface{}){
         self := shared["self"].(*GenericHot)
     })
-    this.queryHot(h)
+    this.QueryHot(h)
     answer:=<-h.Answer
 *********************************************/
 
