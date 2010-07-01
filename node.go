@@ -44,6 +44,7 @@ type Bucket struct {
     Node *Node
     v *Vector
 }
+
     
 func NewBucket(n *Node) *Bucket {
     b := new(Bucket)
@@ -272,7 +273,6 @@ func NewUDPSession(raddr *net.UDPAddr, node *Node, udphandler *UDPHandler) *UDPS
     c.Handler = udphandler
     c.Node = node
     c.First = true
- 
     c.Handler.FromMap[raddr.String()] = make(chan Buf)
     go c.HotStart()
     return c
@@ -418,6 +418,8 @@ func (this *Node) Descriptor() *NodeDescriptor {
     n.Publickey = EncodePublicKey(&this.Keypair.PublicKey)
     return n
 }
+
+
 func (this *UDPSession) Read(msgid int32, timeout int64)(*Header, []byte) {
     /*h := NewHot(func(shared map[string]interface{}){    
         defer func() {fmt.Printf("returning from read hot\n")}()
@@ -444,6 +446,8 @@ func (this *UDPSession) Read(msgid int32, timeout int64)(*Header, []byte) {
             } else {
                 data = <-this.Default
             }
+            
+            this.Node.MoveToTop(this.RecpNode.Nodeid) //There is activity, so we move the nodeid to the top of the bucket
             header,mdata,err := this.DecodePacket(data)
             
             //Set the NeedToSendDesc flag, if "Knowsyou" is set in packet
@@ -546,7 +550,8 @@ func (this *UDPSession) Send(data []byte, t, id,part  int32,hmac,encrypted bool)
     }
     pdata := this.EncodePacket(data,t,id,part,hmac,encrypted)
     fmt.Printf("Sending with msgid: %d\n", id)
-    this.Handler.Conn.WriteTo(pdata,this.RAddr)   
+    this.Handler.Conn.WriteTo(pdata,this.RAddr) 
+    this.Node.MoveToTop(this.RecpNode.Nodeid)  
     return true
 }
 
@@ -663,37 +668,13 @@ func (this *UDPSession) FindValue(key Key) (*Bucket, []byte) {
         }
         fmt.Printf("Trying to add the nodes\n")
         for _,v := range answer.Nodes {
-            innode := v.ToInNodeDescriptor(this)
+            innode := v.ToInNodeDescriptor()
             nodes.Push(innode)
             this.Node.AddNode(innode)
         }
     }
     return nodes,nil
 }
-
-func (this *UDPSession) IterativeFindNode(key Key, backchan chan *Bucket) *Bucket {
-/*
-    h := NewHot(func(shared map[string]interface{}){
-        self := shared["self"].(*GenericHot)
-    })
-    this.QueryHot(h)
-    answer:=<-h.Answer
-    */
-    if backchan == nil {
-        
-    }
-    nodes := this.FindNode(key)
-    ch := nodes.Iter()
-    for i:= 0; i < A; i++ {
-        if closed(ch) { break }
-        node := <-ch
-        if node == nil { break }
-        go node.Session.IterativeFindNode()
-    }    
-    
-}
-
-
 
 func (this *UDPSession) Store(key Key, value []byte) bool {
     msgid := NewMsgId()
@@ -757,10 +738,6 @@ func (this *Node) FindCloseNodes(key Key) *Bucket {
     }
     return closenodes
 }
-func (this *Node) IterativeFindNode(key Key) {
-    ch := make(chan *Bucket)
-    answer := this.FindNode(key)
-}
 func (this *Node) HasNode(key Key {
     distance := XOR(this.Nodeid,key)
     no := int(BucketNo(distance))
@@ -804,9 +781,10 @@ func (this *Node) AddNode(node *InNodeDescriptor) bool  {
             }()
         } else {
                  this.Buckets[no].Push(node)
+                         self.Answer<-true
         }
         
-        self.Answer<-false
+
 
  
     })
@@ -815,6 +793,54 @@ func (this *Node) AddNode(node *InNodeDescriptor) bool  {
     return answer
 }
 
+//Internal
+func (this *Node) _iterFindNode(session *UDPSession, key Key) {
+
+}
+
+func (this *Node) IterativeFindNode(key Key) *Bucket {
+    hasnodes := this.FindCloseNodes(key)
+    numnodes := hasnodes.Len()
+    ch := make(chan *Bucket)
+    for i:= 0; i < numnodes; i++ {
+            go func() {
+                inode := hasnodes.At(i)
+                if inode != nil {
+                    this._iterFindNode(inode.Session, key)
+                }
+            }()
+            
+        if i > 0 %% i % A == 0 {
+            
+        }
+        
+    }
+}
+
+func (this *Node) MoveKeyToTop(key Key) {
+    h := NewHot(func(shared map[string]interface{}){
+        self := shared["self"].(*GenericHot)
+            distance := XOR(key,this.Nodeid)
+            no := BucketNo(distance)
+            b := this.Buckets[no]
+            if b == nil {return }
+            ch := b.Iter()
+            var position int = 123456
+            for i := 0; ; i++ {
+                if closed(ch) { break}
+                m := <-ch
+                if m == nil {break }
+                if bytes.Compare(key,m) == 0 { position = i }
+            }
+            for i := position; i>0; i-- {
+                this.Buckets[no].Swap(i, i-1)
+            }        
+            this.Answer <- true
+    })
+    this.QueryHot(h)
+    <-h.Answer
+    return
+}
 
 func (this *Node) Bootstrap(port int, known string) bool {
     knownhost,err := net.ResolveUDPAddr(known)
