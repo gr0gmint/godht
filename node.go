@@ -15,6 +15,7 @@ import "bytes"
 import "goprotobuf.googlecode.com/hg/proto"
 import "fmt"
 import "big"
+import "sort"
 
 const (
     K = 20
@@ -26,6 +27,7 @@ const (
     tRepublish = 86400
     MAXPKTSIZE = 4096
     MAXSTORESIZE = 64000
+    TIMEOUT = 3500000000
 
 )
 type Key []byte
@@ -43,6 +45,7 @@ type InNodeDescriptor struct { /* In = internal */
 type Bucket struct {
     Node *Node
     v *Vector
+    sortKey Key
 }
 
     
@@ -52,12 +55,21 @@ func NewBucket(n *Node) *Bucket {
     b.v = new(Vector)
     return b
 }
+func (this *Bucket) SetSortKey(key Key) {
+    this.sortKey = key
+}
+
 func (this *Bucket) Len() int {
     return this.v.Len()
 }
 func (this *Bucket) Less(i,j int) bool {
-    distance1 := XOR(this.At(i).Nodeid, this.Node.Nodeid)
-    distance2 := XOR(this.At(j).Nodeid, this.Node.Nodeid)
+    if this.sortKey == nil {
+        distance1 := XOR(this.At(i).Nodeid, this.Node.Nodeid)
+        distance2 := XOR(this.At(j).Nodeid, this.Node.Nodeid)
+        return distance1.Less(distance2)
+    } 
+    distance1 := XOR(this.At(i).Nodeid, this.sortKey)
+    distance2 := XOR(this.At(j).Nodeid, this.sortKey)
     return distance1.Less(distance2)
 }
 func (this *Bucket) At(i int) *InNodeDescriptor {
@@ -90,6 +102,9 @@ func (this *Bucket) Iter()  chan *InNodeDescriptor {
     }()
     return nodech
 }
+
+
+
 type Node struct {
     HotRoutine
     Buckets map[int]*Bucket
@@ -97,6 +112,7 @@ type Node struct {
     Reachable bool
     Keypair *rsa.PrivateKey
     Listenport int
+    Handler *UDPHandler
 }
 
 type Listener struct {
@@ -146,6 +162,8 @@ func (b Buf) Read(p []byte) (int, os.Error) {
     copy(p,b)
     return len(b), nil
 }
+
+
 
 
 func NewMsgId() int32 {
@@ -446,8 +464,9 @@ func (this *UDPSession) Read(msgid int32, timeout int64)(*Header, []byte) {
             } else {
                 data = <-this.Default
             }
-            
-            this.Node.MoveToTop(this.RecpNode.Nodeid) //There is activity, so we move the nodeid to the top of the bucket
+            if this.RecpNode != nil {
+            this.Node.MoveKeyToTop(this.RecpNode.Nodeid) //There is activity, so we move the nodeid to the top of the bucket
+            }
             header,mdata,err := this.DecodePacket(data)
             
             //Set the NeedToSendDesc flag, if "Knowsyou" is set in packet
@@ -486,10 +505,9 @@ func (this *UDPSession) Read(msgid int32, timeout int64)(*Header, []byte) {
                         }
                         pk := DecodePublicKey(header.From.Publickey)
                         desc.Publickey = pk
-                        if this.Node.AddNode(desc) {
+                        this.Node.AddNode(desc)
                             this.RecpNode = desc
                             this.NodeIsAdded = true
-                        }
                     
             
                 }
@@ -502,7 +520,7 @@ func (this *UDPSession) Read(msgid int32, timeout int64)(*Header, []byte) {
               return header,mdata
             }
         } else {
-            if this.IdMap[msgid] == nil { fmt.Printf("make(chan Buf)\n"); this.IdMap[msgid] = make(chan Buf) }
+            if d,ok := this.IdMap[msgid]; !ok || d == nil { fmt.Printf("make(chan Buf)\n"); this.IdMap[msgid] = make(chan Buf) }
             fmt.Printf("data =  <-this.IdMap[%d]\n", msgid)
             if timeout == 0 {
                 fmt.Printf("Querying this.IdMap[msgid]\n")
@@ -550,8 +568,10 @@ func (this *UDPSession) Send(data []byte, t, id,part  int32,hmac,encrypted bool)
     }
     pdata := this.EncodePacket(data,t,id,part,hmac,encrypted)
     fmt.Printf("Sending with msgid: %d\n", id)
-    this.Handler.Conn.WriteTo(pdata,this.RAddr) 
-    this.Node.MoveToTop(this.RecpNode.Nodeid)  
+    this.Handler.Conn.WriteTo(pdata,this.RAddr)
+    if this.RecpNode != nil { 
+    this.Node.MoveKeyToTop(this.RecpNode.Nodeid)  
+    }
     return true
 }
 
@@ -581,7 +601,10 @@ func (this *UDPSession) _findNode(key Key, findvalue bool) *AnswerFindNode{
     this.Send(data, PktType_FINDNODE, msgid, 0, true,false)
     fmt.Printf("Waiting for answer....\n")
     fmt.Printf("_findnode·msgid = %d\n", msgid)
-    header,data := this.Read(msgid,0 )
+    header,data := this.Read(msgid,TIMEOUT )
+    if header == nil {
+        return nil
+    }
     fmt.Printf("Answer is of type: %s\n\n", PktType_name[int32(*header.Type)])
     if *header.Type == PktType_ANSWERNODES {
         fmt.Printf("Got an answer!\n")
@@ -614,7 +637,7 @@ type InNodeDescriptor struct {
     Bucket *Bucket
 }
 */
-func (this *NodeDescriptor) ToInNodeDescriptor(session *UDPSession) *InNodeDescriptor {
+func (this *NodeDescriptor) ToInNodeDescriptor() *InNodeDescriptor {
     innode := new(InNodeDescriptor)
     innode.Behindnat = *this.Behindnat
     innode.Nodeid = make(Key, B/8)
@@ -624,7 +647,6 @@ func (this *NodeDescriptor) ToInNodeDescriptor(session *UDPSession) *InNodeDescr
     }
     innode.Addr = new(net.UDPAddr)
     innode.Addr.Port = int(*this.Udpport)
-    innode.Session = session
     if this.Ipaddr != nil {
         innode.Addr.IP = net.IPv4 (this.Ipaddr[0], this.Ipaddr[1], this.Ipaddr[2], this.Ipaddr[3])
     }
@@ -649,13 +671,14 @@ func (this *UDPSession) FindNode(key Key) *Bucket {
     fmt.Printf("Got the answer: %s\n", answer)
     nodes := NewBucket(this.Node)
     if answer != nil {
+        if len(answer.Nodes) == 0 { return nil }
         fmt.Printf("Trying to add the nodes\n")
         for _,v := range answer.Nodes {
-            innode := v.ToInNodeDescriptor(this)
+            innode := v.ToInNodeDescriptor()
             nodes.Push(innode)
             this.Node.AddNode(innode)
         }
-    }
+    } else { return nil }
     return nodes
 }
 func (this *UDPSession) FindValue(key Key) (*Bucket, []byte) {
@@ -702,6 +725,7 @@ func (this *UDPSession) IsAccepted(msgid int32) bool {
 func NewNode() *Node {
     n := new(Node)
     n.Buckets = make(map[int]*Bucket)
+    go n.HotStart()
     return n
 }
 
@@ -716,6 +740,9 @@ func (this *Node) FindCloseNodes(key Key) *Bucket {
     var leap int = 1
     
     first = int(BucketNo(distance))
+    if this.Buckets[first] == nil {
+        this.Buckets[first] = NewBucket(this)
+    }
     ichan = this.Buckets[first].Iter()
     for closenodes.Len() < K {
         if (first + leap) >= 159 &&  ( first - leap) <= 0 {
@@ -738,7 +765,7 @@ func (this *Node) FindCloseNodes(key Key) *Bucket {
     }
     return closenodes
 }
-func (this *Node) HasNode(key Key {
+func (this *Node) HasNode(key Key)bool {
     distance := XOR(this.Nodeid,key)
     no := int(BucketNo(distance))
     var exists = false
@@ -747,7 +774,7 @@ func (this *Node) HasNode(key Key {
         if closed(ch) {break }
         n := <-ch
         if n == nil {break }
-        if bytes.Compare(node.Nodeid, n.Nodeid) == 0 {exists = true; break}
+        if bytes.Compare(n.Nodeid, n.Nodeid) == 0 {exists = true; break}
     }
     if exists {
             return true
@@ -760,6 +787,15 @@ func (this *Node) AddNode(node *InNodeDescriptor) bool  {
         self := shared["self"].(*GenericHot)
         distance := XOR(this.Nodeid,node.Nodeid)
         no := int(BucketNo(distance))
+        
+        if node.Session == nil {
+            node.Session = NewUDPSession(node.Addr,this,this.Handler)
+            node.Session.NodeIsAdded = true
+            node.Session.NeedToSendDesc= true
+            go node.Session.Start()
+            time.Sleep(10000000)
+        }
+        
         if this.Buckets[no] == nil {
             this.Buckets[no] = NewBucket(this)
         }
@@ -794,55 +830,110 @@ func (this *Node) AddNode(node *InNodeDescriptor) bool  {
 }
 
 //Internal
-func (this *Node) _iterFindNode(session *UDPSession, key Key) {
-
+func (this *Node) _iterFindNode(session *UDPSession,key Key, ch chan *Bucket, progress int) {
+    var nodes *Bucket
+    nodes = session.FindNode(key)
+    if nodes == nil { return }
+    nodes.SetSortKey(key)
+    sort.Sort(nodes)
+    ich := nodes.Iter()
+    for {
+        if closed(ich) { break }
+        inode:=<-ich
+        if inode == nil {
+            break
+        }
+        if bytes.Compare(inode.Nodeid,this.Nodeid) //If this is ourself
+        {
+            continue
+        }
+        if progress == 3 {  //Three strike rule. if the iteration does not get closer to the key by three tries, return
+            ch <- nodes
+            return
+        }
+        newnodes := inode.Session.FindNode(key)
+        if newnodes == nil {
+            continue
+        } 
+        newnodes.SetSortKey(key)
+        sort.Sort(newnodes)
+        
+        ich = newnodes.Iter()
+        for {
+            if closed(ich) { break }
+            ninode := <-ich
+            if ninode == nil {break}
+            if ninode.Nodeid.Less(inode.Nodeid) {
+                this._iterFindNode(ninode.Session, key, ch, 0)
+            } else {
+                this._iterFindNode(ninode.Session, key, ch, progress+1)
+            }
+        }
+    }
 }
 
 func (this *Node) IterativeFindNode(key Key) *Bucket {
     hasnodes := this.FindCloseNodes(key)
-    numnodes := hasnodes.Len()
+    hasnodes.SetSortKey(key)
+    sort.Sort(hasnodes)
+    
     ch := make(chan *Bucket)
-    for i:= 0; i < numnodes; i++ {
+    fmt.Printf("Length of hasnodes = %d\n", hasnodes.Len())
+    for i:= 0; i < hasnodes.Len()  && i < Alpha; i++ {
+            ic := i
             go func() {
-                inode := hasnodes.At(i)
+                        fmt.Printf("hasnodes.At(%d)\n", ic)
+                inode := hasnodes.At(ic)
                 if inode != nil {
-                    this._iterFindNode(inode.Session, key)
+                    this._iterFindNode(inode.Session, key,ch,0)
                 }
             }()
-            
-        if i > 0 %% i % A == 0 {
-            
-        }
-        
     }
+    nodes := <-ch
+    return nodes
+    
 }
 
 func (this *Node) MoveKeyToTop(key Key) {
     h := NewHot(func(shared map[string]interface{}){
         self := shared["self"].(*GenericHot)
             distance := XOR(key,this.Nodeid)
-            no := BucketNo(distance)
-            b := this.Buckets[no]
-            if b == nil {return }
+            no := int(BucketNo(distance))
+            b,ok := this.Buckets[no]
+            if b == nil || !ok {return }
             ch := b.Iter()
             var position int = 123456
             for i := 0; ; i++ {
                 if closed(ch) { break}
                 m := <-ch
                 if m == nil {break }
-                if bytes.Compare(key,m) == 0 { position = i }
+                if bytes.Compare(key,m.Nodeid) == 0 { position = i }
             }
             for i := position; i>0; i-- {
                 this.Buckets[no].Swap(i, i-1)
             }        
-            this.Answer <- true
+            self.Answer <- true
     })
     this.QueryHot(h)
     <-h.Answer
     return
 }
-
-func (this *Node) Bootstrap(port int, known string) bool {
+func GeneratePrivateKey(filename string) {
+        os.Open(filename, os.O_CREAT, 0644)
+        f,err := os.Open(filename, os.O_WRONLY, 0644)
+        if err != nil { fmt.Printf("%s\n", err); return }
+        fmt.Printf("Generating key... \n")
+        pk,_ := rsa.GenerateKey(rand.Reader, 768)
+        fmt.Printf("Done.. Marshalling\n")
+        pkdata := x509.MarshalPKCS1PrivateKey(pk)
+        fmt.Printf("Done\n")
+        _,err = f.Write(pkdata)
+                if err != nil { fmt.Printf("%s\n", err); return }
+        
+        f.Close()
+    
+}
+func (this *Node) Bootstrap(port int, known string, privatekey string) bool {
     knownhost,err := net.ResolveUDPAddr(known)
     if err != nil {
         fmt.Printf("E: %s\n", err)
@@ -851,26 +942,12 @@ func (this *Node) Bootstrap(port int, known string) bool {
     random.Seed(time.Nanoseconds())
 
     //Establish private key
-    f, err := os.Open("/home/kris/.godht/private_key", os.O_RDONLY, 0666) 
+    f, err := os.Open(privatekey, os.O_RDONLY, 0666) 
     if err != nil {
-        os.Mkdir("/home/kris/.godht", 0755)
-        os.Open("/home/kris/.godht/private_key", os.O_CREAT, 0644)
-        f,err = os.Open("/home/kris/.godht/private_key", os.O_WRONLY, 0644)
-        if err != nil { fmt.Printf("%s\n", err); return false }
-        fmt.Printf("Generating key... \n")
-        pk,_ := rsa.GenerateKey(rand.Reader, 768)
-        fmt.Printf("Done.. Marshalling\n")
-        pkdata := x509.MarshalPKCS1PrivateKey(pk)
-        fmt.Printf("Done\n")
-        _,err := f.Write(pkdata)
-                if err != nil { fmt.Printf("%s\n", err); return false }
-        
-        f.Close()
-        f,err= os.Open("/home/kris/.godht/private_key", os.O_RDONLY, 0666)
-                if err != nil { fmt.Printf("%s\n", err); return false }
+        return false
     }
-    fi,err := os.Stat("/home/kris/.godht/private_key")
-            if err != nil { fmt.Printf("%s\n", err); return false }
+
+        fi,err := os.Stat(privatekey)
     size := int(fi.Size)
     pkdata := make([]byte, size)
     f.Read(pkdata)
@@ -907,6 +984,7 @@ func (this *Node) Bootstrap(port int, known string) bool {
     //Start the listener
     fmt.Printf("Starting the UDPHandler..\n")
     udphandler := NewUDPHandler(port,this)
+    this.Handler = udphandler
     go udphandler.Start()
     
     
@@ -918,7 +996,8 @@ func (this *Node) Bootstrap(port int, known string) bool {
     c.NodeIsAdded = false
     c.NeedToSendDesc = true
     go c.Start()
-    go c.FindNode(this.Nodeid) //Should be iterative. But not for now
+    c.FindNode(this.Nodeid) //Should be iterative. But not for now
+    this.IterativeFindNode(this.Nodeid)
     return true
 }
 
