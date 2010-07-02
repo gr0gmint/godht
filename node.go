@@ -113,6 +113,7 @@ type Node struct {
     Keypair *rsa.PrivateKey
     Listenport int
     Handler *UDPHandler
+    TotalNodes int
 }
 
 type Listener struct {
@@ -292,7 +293,10 @@ func NewUDPSession(raddr *net.UDPAddr, node *Node, udphandler *UDPHandler) *UDPS
     c.Node = node
     c.First = true
     c.Handler.FromMap[raddr.String()] = make(chan Buf)
+    
+    c.IdMap = make(map[int32]chan Buf)
     go c.HotStart()
+    
     return c
 }
 
@@ -335,7 +339,6 @@ func (this *UDPSession) Start() {
     if this.Handler.FromMap[saddr] == nil {
         this.Handler.FromMap[saddr] = make (chan Buf)
     }
-    this.IdMap = make(map[int32]chan Buf)
     packetchan := this.Handler.FromMap[saddr]
     go func() {
         for {
@@ -737,7 +740,7 @@ func (this *Node) FindCloseNodes(key Key) *Bucket {
     closenodes := NewBucket(this)
     var ichan chan *InNodeDescriptor
     var first int
-    var leap int = 1
+    var leap int = 0
     
     first = int(BucketNo(distance))
     if this.Buckets[first] == nil {
@@ -788,13 +791,6 @@ func (this *Node) AddNode(node *InNodeDescriptor) bool  {
         distance := XOR(this.Nodeid,node.Nodeid)
         no := int(BucketNo(distance))
         
-        if node.Session == nil {
-            node.Session = NewUDPSession(node.Addr,this,this.Handler)
-            node.Session.NodeIsAdded = true
-            node.Session.NeedToSendDesc= true
-            go node.Session.Start()
-            time.Sleep(10000000)
-        }
         
         if this.Buckets[no] == nil {
             this.Buckets[no] = NewBucket(this)
@@ -802,6 +798,15 @@ func (this *Node) AddNode(node *InNodeDescriptor) bool  {
         if this.HasNode(node.Nodeid) {
             self.Answer <- false
             return
+        }
+        this.TotalNodes++
+        fmt.Printf("\n\nTotal node count = %d\n\n", this.TotalNodes)
+        if node.Session == nil {
+            node.Session = NewUDPSession(node.Addr,this,this.Handler)
+            node.Session.NodeIsAdded = true
+            node.Session.NeedToSendDesc= true
+            go node.Session.Start()
+            time.Sleep(10000000)
         }
         if this.Buckets[no].Len() >= K  {
             fmt.Printf("BUCKET IS FULL - TRYING TO PING\n")
