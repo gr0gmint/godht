@@ -10,7 +10,8 @@ TARG=dht
 GOFILES=\
 	node.go\
 	hotcode.go\
-	dht.pb.go
+	dht.pb.go\
+	datastore.go
 
 include $(GOROOT)/src/Make.pkg
 dht.pb.go:

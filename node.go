@@ -27,7 +27,7 @@ const (
     tRepublish = 86400
     MAXPKTSIZE = 4096
     MAXSTORESIZE = 64000
-    TIMEOUT = 3500000000
+    TIMEOUT = 2000000000
 
 )
 type Key []byte
@@ -114,6 +114,7 @@ type Node struct {
     Listenport int
     Handler *UDPHandler
     TotalNodes int
+    Data Datastore
 }
 
 type Listener struct {
@@ -379,6 +380,11 @@ func (this *UDPSession) Start() {
             case PktType_STORE:
                 p := NewStore()
                 proto.Unmarshal(data,p)
+                this.Node.Data.Set(p.Key, p.Value)
+                answer := NewAnswerOk()
+                answer.Ok = proto.Bool(true)
+                adata,_ := proto.Marshal(answer)
+                this.Send(adata, PktType_ANSWEROK, *header.Msgid, 1, false,false)
             case PktType_FINDNODE:
                 p := NewFindNode()
                 proto.Unmarshal(data,p)
@@ -393,6 +399,9 @@ func (this *UDPSession) Start() {
                 }
                 answer := NewAnswerFindNode()
                 answer.Nodes = descriptors
+                if *p.Findvalue {
+                    answer.Value = this.Node.Data.Get(p.Key)
+                }
                 adata,err := proto.Marshal(answer)
                 if err != nil { fmt.Printf("E: %s\n", err) }
                 this.Send(adata, PktType_ANSWERNODES, *header.Msgid,1,false,false)
@@ -729,6 +738,7 @@ func (this *UDPSession) IsAccepted(msgid int32) bool {
 func NewNode() *Node {
     n := new(Node)
     n.Buckets = make(map[int]*Bucket)
+    n.Data = NewSimpleDatastore()
     go n.HotStart()
     return n
 }
@@ -854,6 +864,12 @@ func (this *Node) AddNode(node *InNodeDescriptor) bool  {
     return answer
 }
 
+
+
+
+
+
+
 //Internal
 func (this *Node) _iterFindNode(session *UDPSession,key Key, ch chan *Bucket, progress int, cancel *bool, alreadyAsked *Bucket) {
     if alreadyAsked == nil {
@@ -883,6 +899,7 @@ func (this *Node) _iterFindNode(session *UDPSession,key Key, ch chan *Bucket, pr
         
         if *cancel { return }
         if progress == 3 {
+            ch <- nodes
             return
         }
         j := alreadyAsked.Iter()
@@ -941,7 +958,109 @@ func (this *Node) _iterFindNode(session *UDPSession,key Key, ch chan *Bucket, pr
         }
         */
     }
+    time.Sleep(TIMEOUT)
+    ch <- nodes
 }
+
+
+//Internal
+func (this *Node) _iterFindValue(session *UDPSession,key Key, ch chan v_answer, progress int, cancel *bool, alreadyAsked *Bucket) {
+    if alreadyAsked == nil {
+        alreadyAsked = NewBucket(this)
+    }
+    
+    var nodes *Bucket
+    nodes,value := session.FindValue(key)
+    
+        if value != nil {
+            ch <- v_answer{nil,value}
+            return
+        }
+    if nodes == nil { return }
+    nodes.SetSortKey(key)
+    sort.Sort(nodes)
+    ich := nodes.Iter()
+    L1: for {
+        if closed(ich) { break }
+        inode:=<-ich
+        if inode == nil {
+            break
+        }
+        if bytes.Compare(inode.Nodeid,this.Nodeid) == 0 { //If this is ourself
+            continue
+        }
+        
+            if bytes.Compare(inode.Nodeid, key) == 0 {
+                ch <- v_answer{nodes,nil}
+                return
+            }
+        
+        if *cancel { return }
+        if progress == 3 {
+            return
+        }
+        j := alreadyAsked.Iter()
+        for {
+            if closed(j) {break}
+            m := <-j
+            if m == nil {break}
+            
+            if bytes.Compare(m.Nodeid, inode.Nodeid) == 0 {break L1 }
+        }
+        
+        fmt.Printf("Asking %x for peers\n", keytobyte(inode.Nodeid))
+        newnodes,value := inode.Session.FindValue(key)
+        alreadyAsked.Push(inode)
+        if value != nil {
+            ch <- v_answer{newnodes,value}
+            return
+        }
+        if newnodes == nil {
+            continue
+        } 
+        newnodes = this.FindCloseNodes(key)
+        newnodes.SetSortKey(key)
+        sort.Sort(newnodes)
+        ich = newnodes.Iter()
+        for {
+            if closed(ich) {break}
+            n := <-ich
+            if n == nil { break }
+            if bytes.Compare(n.Nodeid, key) == 0 {
+                ch <- v_answer{newnodes,nil}
+                return
+            }
+        }
+        
+        if newnodes.Len() > 0 {
+            
+            if XOR(newnodes.At(0).Nodeid, key).Less( XOR(inode.Nodeid, key) ) {
+                fmt.Printf("\n\n\n%x <  %x, Iterating further\n\n", keytobyte(XOR(newnodes.At(0).Nodeid, key)), keytobyte(XOR(inode.Nodeid, key)))
+                this._iterFindValue(newnodes.At(0).Session, key, ch, 0,cancel, alreadyAsked)
+            } else {
+                progress ++
+                continue
+            }
+        }        
+        /*
+        ich = newnodes.Iter()
+        for {
+            if closed(ich) { break }
+            ninode := <-ich
+            if ninode == nil {break}
+            if *cancel  { return }
+            if bytes.Compareninode.Nodeid
+
+
+            } else {
+                continue
+                //this._iterFindNode(ninode.Session, key, ch, progress+1,cancel)
+            }
+        }
+        */
+    }
+}
+
 
 func (this *Node) IterativeFindNode(key Key) *Bucket {
     hasnodes := this.FindCloseNodes(key)
@@ -970,6 +1089,52 @@ func (this *Node) IterativeFindNode(key Key) *Bucket {
     
 }
 
+type v_answer struct {
+    nodes *Bucket
+    value []byte
+}
+func (this *Node) IterativeFindValue(key Key) (*Bucket,[]byte) {
+    hasnodes := this.FindCloseNodes(key)
+    hasnodes.SetSortKey(key)
+    sort.Sort(hasnodes)
+    
+    
+    cancel := new(bool)
+    *cancel = false
+    
+    ch := make(chan v_answer)
+    fmt.Printf("Length of hasnodes = %d\n", hasnodes.Len())
+    for i:= 0; i < hasnodes.Len()  && i < Alpha; i++ {
+            ic := i
+            go func() {
+                        fmt.Printf("hasnodes.At(%d)\n", ic)
+                inode := hasnodes.At(ic)
+                if inode != nil {
+                    this._iterFindValue(inode.Session, key,ch,0,cancel, nil)
+                }
+            }()
+    }
+    v := <-ch
+    *cancel = true
+    return v.nodes,v.value
+    
+}
+
+
+
+
+func (this *Node) IterativeStore(key Key, value []byte) {
+    closenodes := this.IterativeFindNode(key)
+    fmt.Printf("back from iterativefindnode\n")
+    ch := closenodes.Iter()
+    for {
+        if closed(ch) { break }
+        m := <-ch
+        if m == nil {break}
+        fmt.Printf("Trying to STORE\n")
+        m.Session.Store(key, value)
+    }
+}
 
 func (this *Node) MoveKeyToTop(key Key) {
     h := NewHot(func(shared map[string]interface{}){
