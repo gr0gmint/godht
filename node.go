@@ -53,7 +53,7 @@ type Atom struct {
 }
 func NewAtom() *Atom {
     a := new(Atom)
-    a.HotStart()
+    go a.HotStart()
     return a
 }
 func (this *Atom) Do(joe func() ) {
@@ -708,8 +708,8 @@ func (this *UDPSession) FindNode(key Key) *Bucket {
         for _,v := range answer.Nodes {
             fmt.Printf("A: %x\n", v.Nodeid)
             innode := v.ToInNodeDescriptor()
-            nodes.Push(innode)
             this.Node.AddNode(innode)
+            nodes.Push(innode)
         }
     } else { return nil }
     return nodes
@@ -856,7 +856,6 @@ func (this *Node) AddNode(node *InNodeDescriptor) bool  {
             node.Session.NodeIsAdded = true
             node.Session.NeedToSendDesc= true
             go node.Session.Start()
-            time.Sleep(10000000)
         }
         if this.Buckets[no].Len() >= K  {
             fmt.Printf("BUCKET IS FULL - TRYING TO PING\n")
@@ -1004,17 +1003,20 @@ func (this *Node) IterativeFindNode(key Key) *Bucket {
     
     ch := make(chan bool)
     done := make (chan bool)
-    fmt.Printf("Length of hasnodes = %d\n", hasnodes.Len())
+
     async := NewAtom()
-    shortlist := NewBucket(this)
+    var shortlist *Bucket
     nodelist := NewBucket(this)
     closest := make(Key, 20)
     alreadyAsked := NewBucket(this)
     shortlist=hasnodes
+    fmt.Printf("Length of shortlist = %d\n", shortlist.Len())
      at := 0
     for {
+
     go func() {
         for i:= at; i < shortlist.Len()  && i < at+Alpha; i++ {
+
                 ic := i
                 go func() {
                     fmt.Printf("hasnodes.At(%d)\n", ic)
@@ -1024,6 +1026,7 @@ func (this *Node) IterativeFindNode(key Key) *Bucket {
                         j := alreadyAsked.Iter()
                         async.Do(func() {
                             for {
+
                                 if closed(j) {break}
                                 m := <-j
                                 if m == nil {break}
@@ -1036,22 +1039,34 @@ func (this *Node) IterativeFindNode(key Key) *Bucket {
                             }
                         })
                         if !already {
+                            fmt.Printf("Asking peer %x\n", keytobyte(inode.Nodeid))
                             nodes := inode.Session.FindNode(key)
+                                                        fmt.Printf("Done Asking\n")
                             closer := false
-                            c :=  nodes.Iter()
+                            if nodes == nil {return }
+                                     c :=  nodes.Iter()
                             async.Do(func() { 
-                                
+
                                 for {
+
                                     if closed(c) {break}
                                     n := <-c
                                     if n == nil {break}
                                     
+                                    donotadd := false
+                                    if bytes.Compare(n.Nodeid, this.Nodeid) == 0 { donotadd = true }
+                                    for k := 0; k < nodelist.Len(); k++ {
+                                        if bytes.Compare(n.Nodeid, nodelist.At(k).Nodeid) == 0   { donotadd = true; }
+                                    }
+                                    if !donotadd {
+                                        nodelist.Push(n)
+                                    }
                                     if XOR(n.Nodeid, key).Less( XOR(closest, key) )  {
-                                        
                                         closer =true
                                     }
                                 }
                             })
+                            fmt.Printf("Back from async\n")
                             if closer {
                                 ch <- true
                             }
@@ -1066,9 +1081,10 @@ func (this *Node) IterativeFindNode(key Key) *Bucket {
             a := <-ch
             if a {closer = true}
         }
+        fmt.Printf("done <-closer\n")
         done <-closer
       }()
-     
+
     a := <-done
     if a { 
         nodelist.SetSortKey(key)
@@ -1079,7 +1095,7 @@ func (this *Node) IterativeFindNode(key Key) *Bucket {
         shortlist.Push(nodelist.At(i))
 
         }
-                at = 0
+        at = 0
         continue
     } else if at+Alpha > shortlist.Len() {
         break
@@ -1094,7 +1110,7 @@ func (this *Node) IterativeFindNode(key Key) *Bucket {
     if l > 20 {
     nodelist.Cut(20,l-1)
     }
-    fmt.Printf("Returning shortlist\n")
+    fmt.Printf("Returning nodelist with length of=%d\n", nodelist.Len())
     return nodelist
 }
 
