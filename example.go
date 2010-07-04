@@ -20,5 +20,7 @@ func main() {
     value := (bytes.NewBufferString(valuestring)).Bytes()
     fmt.Printf("Trying a iterativestore now\n")
     node.IterativeStore(key,value)
+    _,v := node.IterativeFindValue(key)
+    fmt.Printf("Found value: %s", v)
     time.Sleep(99999999999999999)   
 }

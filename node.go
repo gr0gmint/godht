@@ -1117,6 +1117,141 @@ func (this *Node) IterativeFindNode(key Key) *Bucket {
     return nodelist
 }
 
+
+func (this *Node) IterativeFindValue(key Key) (*Bucket, []byte) {
+    hasnodes := this.FindCloseNodes(key)
+    
+    cancel := new(bool)
+    *cancel = false
+    
+    ch := make(chan bool)
+    done := make (chan bool)
+    
+
+    async := NewAtom()
+    var shortlist *Bucket
+    nodelist := NewBucket(this)
+    closest := make(Key, 20)
+    alreadyAsked := NewBucket(this)
+    var value []byte
+    shortlist=hasnodes
+    fmt.Printf("Length of shortlist = %d\n", shortlist.Len())
+     at := 0
+    for {
+
+    go func() {
+        for i:= at; i < shortlist.Len()  && i < at+Alpha; i++ {
+
+                ic := i
+                go func() {
+                    defer func() {ch <- false; at++}()
+                    fmt.Printf("hasnodes.At(%d)\n", ic)
+                    inode :=  shortlist.At(ic)
+                    if inode != nil {
+                        already := false
+                        j := alreadyAsked.Iter()
+                        async.Do(func() {
+                            for {
+
+                                if closed(j) {break}
+                                m := <-j
+                                if m == nil {break}
+                                
+                                if bytes.Compare(m.Nodeid, inode.Nodeid) == 0 {already=true; break}
+                            }
+                           if !already {
+                                alreadyAsked.Push(inode)
+                                
+                            }
+                        })
+                        if !already {
+                            fmt.Printf("Asking peer %x\n", keytobyte(inode.Nodeid))
+                            nodes,v := inode.Session.FindValue(key)
+                                                        fmt.Printf("Done Asking\n")
+                            if v != nil {
+                               value = v
+                               ch <-true
+                               done <- true
+                               return
+                               
+                            }
+                            closer := false
+                            if nodes == nil {return }
+                                     c :=  nodes.Iter()
+                            async.Do(func() { 
+
+                                for {
+
+                                    if closed(c) {break}
+                                    n := <-c
+                                    if n == nil {break}
+                                    
+                                    donotadd := false
+                                    if bytes.Compare(n.Nodeid, this.Nodeid) == 0 { donotadd = true }
+                                    for k := 0; k < nodelist.Len(); k++ {
+                                        if bytes.Compare(n.Nodeid, nodelist.At(k).Nodeid) == 0   { donotadd = true; }
+                                    }
+                                    if !donotadd {
+                                        nodelist.Push(n)
+                                    }
+                                    if XOR(n.Nodeid, key).Less( XOR(closest, key) )  {
+                                        closer =true
+                                    }
+                                }
+                            })
+                            fmt.Printf("Back from async\n")
+                            if closer {
+                                ch <- true
+                            }
+                        }
+
+                    }
+                }()
+        }
+        closer := false
+        for i:= 0; i < shortlist.Len()  && i < Alpha; i++ {
+            fmt.Printf("i = %d\n", i)
+            a := <-ch
+            if a {closer = true}
+        }
+        fmt.Printf("done <-closer\n")
+        done <-closer
+      }()
+    fmt.Printf("waiting\n")
+    a := <-done
+
+    fmt.Printf("done waiting\n")
+    if a { 
+        nodelist.SetSortKey(key)
+        sort.Sort(nodelist)
+        shortlist := NewBucket(this)
+        for i := 0; i < 20 && i < nodelist.Len(); i++ {
+
+        shortlist.Push(nodelist.At(i))
+
+        }
+        at = 0
+        continue
+    } else if at+Alpha > shortlist.Len() {
+        break
+    } else {
+       at += Alpha
+       fmt.Print("Continuing ... shortlist.Len() = %d\n", shortlist.Len())
+       continue
+    }
+    }
+    l := nodelist.Len()
+        nodelist.SetSortKey(key)
+        sort.Sort(nodelist)
+    if l > 20 {
+    nodelist.Cut(20,l-1)
+    }
+    fmt.Printf("Returning nodelist with length of=%d\n", nodelist.Len())
+    return nodelist,value
+}
+
+
+
 type v_answer struct {
     nodes *Bucket
     value []byte
