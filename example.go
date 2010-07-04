@@ -20,5 +20,5 @@ func main() {
     value := (bytes.NewBufferString(valuestring)).Bytes()
     fmt.Printf("Trying a iterativestore now\n")
     node.IterativeStore(key,value)
-    
+    time.Sleep(99999999999999999)   
 }
