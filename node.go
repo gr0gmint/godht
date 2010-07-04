@@ -1019,6 +1019,7 @@ func (this *Node) IterativeFindNode(key Key) *Bucket {
 
                 ic := i
                 go func() {
+                    defer func() {ch <- false; at++}()
                     fmt.Printf("hasnodes.At(%d)\n", ic)
                     inode :=  shortlist.At(ic)
                     if inode != nil {
@@ -1073,19 +1074,20 @@ func (this *Node) IterativeFindNode(key Key) *Bucket {
                         }
 
                     }
-                ch <- false
                 }()
         }
         closer := false
         for i:= 0; i < shortlist.Len()  && i < Alpha; i++ {
+            fmt.Printf("i = %d\n", i)
             a := <-ch
             if a {closer = true}
         }
         fmt.Printf("done <-closer\n")
         done <-closer
       }()
-
+    fmt.Printf("waiting\n")
     a := <-done
+    fmt.Printf("done waiting\n")
     if a { 
         nodelist.SetSortKey(key)
         sort.Sort(nodelist)
@@ -1101,6 +1103,7 @@ func (this *Node) IterativeFindNode(key Key) *Bucket {
         break
     } else {
        at += Alpha
+       fmt.Print("Continuing ... shortlist.Len() = %d\n", shortlist.Len())
        continue
     }
     }
@@ -1129,7 +1132,7 @@ func (this *Node) IterativeStore(key Key, value []byte) {
         if closed(ch) { break }
         m := <-ch
         if m == nil {break}
-        fmt.Printf("Trying to STORE\n")
+        fmt.Printf("Trying to STORE on %s\n", m.Session.RAddr)
         m.Session.Store(key, value)
     }
 }
@@ -1219,7 +1222,7 @@ func (this *Node) Bootstrap(port int, known string, privatekey string) bool {
     c.NeedToSendDesc = true
     go c.Start()
     c.FindNode(this.Nodeid)
-    this.IterativeFindNode(this.Nodeid)
+    //this.IterativeFindNode(this.Nodeid)
     return true
 }
 
