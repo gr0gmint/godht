@@ -8,6 +8,7 @@ import "crypto/rsa"
 import "crypto/x509"
 import "crypto/rand"
 import "crypto/sha1"
+import "crypto/hmac"
 import random "rand"
 import "time"
 import "encoding/binary"
@@ -16,6 +17,7 @@ import "goprotobuf.googlecode.com/hg/proto"
 import "fmt"
 import "big"
 import "sort"
+import "io"
 
 const (
     K = 20
@@ -171,6 +173,7 @@ type UDPSession struct {
     NeedToSendDesc bool //If the repicient needs the publickey
     NodeIsAdded bool //If the node is added to bucket
     First bool //Keep track of the first packet sent
+    EncryptKey []byte
 }
 
 
@@ -254,34 +257,63 @@ type hdr_n_data struct {
 
 func (this *UDPSession) DecodePacket(data Buf) (*Header,[]byte, os.Error) {
     //Read header first
+    var chdrlen uint32
     var hdrlen uint32
     var datalen uint32
     if len(data) < 8 {
-        fmt.Printf("len(data) < 8.. %x\n",  data)
+        fmt.Printf("len(data) < 8\n")
         return nil,data,os.ENOMEM
     }
-    err := binary.Read(data[0:4], binary.BigEndian, &hdrlen)
+    err := binary.Read(data[0:4], binary.BigEndian, &chdrlen)
         if err != nil { return nil,data,err }
-    err = binary.Read(data[4:8], binary.BigEndian, &datalen)
+    err = binary.Read(data[4:8], binary.BigEndian, &hdrlen)
+        if err != nil { return nil,data,err }
+    err = binary.Read(data[8:12], binary.BigEndian, &datalen)
         if err != nil { return nil,data,err }
     if !(hdrlen < 2048 && datalen <= 8096 ) {
         fmt.Printf("Packet too big!\n")
         return nil,data,os.ENOMEM
     }
-
+    fmt.Printf("chdrlen = %d, hdrlen = %d, datalen = %d\n", chdrlen, hdrlen, datalen)
+    cryptoheader := NewCryptoHeader()
     header := NewHeader()
-    err = proto.Unmarshal(data[8:8+hdrlen], header)
+    err = proto.Unmarshal(data[12:12+chdrlen], cryptoheader)
     if err != nil {
+        fmt.Printf("Returning error\n")
         return nil,data,err
     }
+    
+    //VERIFY AND/OR DECRYPT
+    if cryptoheader.Hmac != nil {
+        key := &[...]byte("JOE DEN GAMLE SWINGER")
+         hmac.NewSHA1(key)
+    }
+    
+    err = proto.Unmarshal(data[12+chdrlen:12+chdrlen+hdrlen], header)
+    if err != nil {
+        fmt.Printf("Header ···· Returning error\n")
+        return nil,data,err
+    }
+    
     newdata := make(Buf, datalen)
-    copy(newdata,data[8+hdrlen:8+hdrlen+datalen])
+    copy(newdata,data[12+chdrlen+hdrlen:12+chdrlen+hdrlen+datalen])
     
     return header, newdata,nil
 }
  
 func (this *UDPSession) EncodePacket(data []byte, t,id,part int32, hmac,encrypted bool) []byte {
         newt := NewPktType(t)
+        cryptoheader := NewCryptoHeader()
+        cryptoheader.Isencrypted = proto.Bool(encrypted)
+        if encrypted {
+            
+        }
+        chdrdata,err := proto.Marshal(cryptoheader)
+        if err != nil {
+            fmt.Printf("%s\n", err)
+            return nil
+        }
+        
         header := NewHeader()
         header.Type = newt
         header.Msgid = proto.Int32(id)
@@ -296,12 +328,15 @@ func (this *UDPSession) EncodePacket(data []byte, t,id,part int32, hmac,encrypte
             fmt.Printf("%s\n", err)
             return nil
         }
+        chdrlen := uint32(len(chdrdata))
         hdrlen := uint32(len(hdrdata))
         datalen :=  uint32(len(data))
-        buffer := make(Buf, 8+hdrlen+datalen)
-        binary.Write(buffer, binary.BigEndian, [2]uint32{hdrlen,datalen})
-        copy(buffer[8:8+len(hdrdata)],hdrdata)
-        copy(buffer[8+len(hdrdata):8+len(hdrdata)+len(data)], data) 
+        fmt.Printf("Sending with: chdrlen = %d, hdrlen = %d, datalen = %d\n", chdrlen, hdrlen, datalen)
+        buffer := make(Buf, 12+chdrlen+hdrlen+datalen)
+        binary.Write(buffer, binary.BigEndian, [3]uint32{chdrlen,hdrlen,datalen})
+        copy(buffer[12:12+int(chdrlen)],chdrdata)
+        copy(buffer[12+int(chdrlen):12+int(chdrlen)+int(hdrlen)], hdrdata) 
+        copy(buffer[12+int(chdrlen)+int(hdrlen):12+int(chdrlen)+int(hdrlen)+int(datalen)], data) 
         return buffer
 }
 
@@ -352,6 +387,41 @@ func (this *UDPHandler) GetSession() *UDPSession {
     return s 
 }
 
+func (this *UDPSession) _handleStore(header *Header, data []byte) {
+    v := bytes.NewBufferString("")
+    p := NewStore()
+    var i int32
+    fmt.Printf("_handleStore\n")
+    for i =1; true; i++ {
+        err := proto.Unmarshal(data,p)
+        
+        if err != nil { 
+            fmt.Printf("err: %s\n", err)
+            answer := NewAnswerOk()
+            answer.Ok = proto.Bool(false)
+            adata,_ := proto.Marshal(answer)
+            this.Send(adata, PktType_ANSWEROK, *header.Msgid, i, false,false)
+            break
+        }
+        v.Write(p.Value)
+        answer := NewAnswerOk()
+        answer.Ok = proto.Bool(true)
+        adata,_ := proto.Marshal(answer)
+        this.Send(adata, PktType_ANSWEROK, *header.Msgid, i, false,false)
+        
+
+        if *p.Ismore {
+            header,data = this.Read(*header.Msgid, 0)
+            if *header.Part != i+1 { break }
+            continue
+        } else {
+            fmt.Printf("Setting a value\n")
+            this.Node.Data.Set(p.Key, v)
+            break
+        }
+    }
+      
+}
 
 func (this *UDPSession) Start() {
     fmt.Printf("UDPSession started\n")
@@ -397,17 +467,14 @@ func (this *UDPSession) Start() {
                                 fmt.Printf("The packet is of type %s\n", PktType_name[int32(*header.Type)])
         switch *header.Type {
             case PktType_STORE:
-                p := NewStore()
-                proto.Unmarshal(data,p)
-                fmt.Printf("Storing %x = %s\n", p.Key, p.Value)
-                this.Node.Data.Set(p.Key, p.Value)
-                answer := NewAnswerOk()
-                answer.Ok = proto.Bool(true)
-                adata,_ := proto.Marshal(answer)
-                this.Send(adata, PktType_ANSWEROK, *header.Msgid, 1, false,false)
+                go this._handleStore(header,data)
             case PktType_FINDNODE:
                 p := NewFindNode()
-                proto.Unmarshal(data,p)
+                err := proto.Unmarshal(data,p)
+                if err != nil {
+                    fmt.Printf("E: %s\n", err)
+                    break
+                }
                 nodeid := p.Key
                 close := this.Node.FindCloseNodes(nodeid)
                 descriptors := make([]*NodeDescriptor, close.Len())
@@ -421,6 +488,7 @@ func (this *UDPSession) Start() {
                 answer.Nodes = descriptors
                 if *p.Findvalue {
                     answer.Value = this.Node.Data.Get(p.Key)
+                    fmt.Printf("Sending back this value: %s\n", answer.Value)
                 }
                 adata,err := proto.Marshal(answer)
                 if err != nil { fmt.Printf("E: %s\n", err) }
@@ -435,12 +503,6 @@ func (this *UDPSession) Start() {
     
 }
 
-
-func (this *UDPSession) _doStore(header *Header, packet *Store) {
-    //This is the datastore mechanism.
-    //Returns a AnswerOk
-    
-}
 
 func DecodePublicKey(p *Publickey) *rsa.PublicKey {
     pk := new(rsa.PublicKey)
@@ -541,11 +603,6 @@ func (this *UDPSession) Read(msgid int32, timeout int64)(*Header, []byte) {
               //If this is some of the first packets received  - needs perhaps to be added to bucket
               if !this.NodeIsAdded { this.AddRecpNode(header.From) }
               
-              if header.Isencrypted != nil {
-                //Decrypt the packet
-                //
-                //
-              }
               return header,mdata
             }
         } else {
@@ -732,20 +789,28 @@ func (this *UDPSession) FindValue(key Key) (*Bucket, []byte) {
     return nodes,nil
 }
 
-func (this *UDPSession) Store(key Key, value []byte) bool {
+func (this *UDPSession) Store(key Key, value io.Reader) bool {
     msgid := NewMsgId()
-    m := NewStore()
-    m.Key = key
-    m.Value = value
-    if len(value) > 3000 {  //Split it up in multiple packets 
-    } else {
-        mdata,_ := proto.Marshal(m)
-        this.Send(mdata,PktType_STORE, msgid, 0,true,false)
-        if this.IsAccepted(msgid) {
-            return true
+    b := make([]byte, 3000)
+    for i:= 0; true; i++ {
+        n,err := value.Read(b)
+        if n != 0 {
+            m := NewStore()
+            m.Key = key
+            m.Value = b[0:n]
+            if err != nil { m.Ismore = proto.Bool(false) } else { m.Ismore = proto.Bool(false) }
+            mdata,_ := proto.Marshal(m)
+            this.Send(mdata,PktType_STORE, msgid, int32(i),true,false)
+            if !this.IsAccepted(msgid) {
+                return false
+            }
+        }
+        if err != nil {
+        break
         }
     }
-    return false
+    fmt.Printf("I sent the store command\n")
+    return true
 }
 func (this *UDPSession) IsAccepted(msgid int32) bool {
     header, _ := this.Read(msgid,0)
@@ -1038,6 +1103,13 @@ func (this *Node) IterativeFindNode(key Key) *Bucket {
                                 alreadyAsked.Push(inode)
                                 
                             }
+                            
+                                donotadd := false
+                                    if bytes.Compare(inode.Nodeid, this.Nodeid) == 0 { donotadd = true }
+                                    if !donotadd {
+                                        nodelist.Push(inode)
+                                }
+                            
                         })
                         if !already {
                             fmt.Printf("Asking peer %x\n", keytobyte(inode.Nodeid))
@@ -1219,7 +1291,7 @@ func (this *Node) IterativeFindValue(key Key) (*Bucket, []byte) {
       }()
     fmt.Printf("waiting\n")
     a := <-done
-
+    
     fmt.Printf("done waiting\n")
     if a { 
         nodelist.SetSortKey(key)
@@ -1259,7 +1331,7 @@ type v_answer struct {
 
 
 
-func (this *Node) IterativeStore(key Key, value []byte) {
+func (this *Node) IterativeStore(key Key, value io.Reader) {
     closenodes := this.IterativeFindNode(key)
     fmt.Printf("back from iterativefindnode\n")
     ch := closenodes.Iter()
@@ -1357,7 +1429,7 @@ func (this *Node) Bootstrap(port int, known string, privatekey string) bool {
     c.NeedToSendDesc = true
     go c.Start()
     c.FindNode(this.Nodeid)
-    //this.IterativeFindNode(this.Nodeid)
+    this.IterativeFindNode(this.Nodeid)
     return true
 }
 

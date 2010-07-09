@@ -10,13 +10,25 @@ enum PktType {
     ANSWERNODES = 52;
     ANSWERERROR = 53;
 }
+enum Cipher {
+    AES = 1;
+    RC4 = 2;
+}
+
+message CryptoHeader {
+    required bool isencrypted = 1;
+    optional bytes hmac = 2;
+    optional bytes key = 3;
+    optional bytes iv = 4;
+    optional bytes checksum = 5;
+    optional Cipher ciphermethod = 6;
+}
+
 message Header { 
     required PktType type = 1;
     required int32 msgid = 2;
     required int32 part = 3; //Kinda like conversation packet counter
-    optional bytes hmac = 5;
     optional NodeDescriptor from = 6;
-    optional bool isencrypted = 7;
     required bool knowsyou = 8;
     optional NodeDescriptor relayedfrom = 9;
 }
@@ -34,7 +46,7 @@ message Store {
     required bytes key = 1;
     required bytes value = 2;
     
-    optional bool ismore = 3;
+    required bool ismore = 3;
 }
 message FindNode {
     required bytes key = 1;
@@ -45,6 +57,9 @@ message CheckReachability {
     required int32 port = 1;
 }
 
+message Transport {
+    required bytes data = 1;
+}
 
 
 message NodeDescriptor { //Like a "from" field

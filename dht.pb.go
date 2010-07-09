@@ -44,6 +44,24 @@ func NewPktType(x int32) *PktType {
 	return &e
 }
 
+type Cipher int32
+const (
+	Cipher_AES = 1
+	Cipher_RC4 = 2
+)
+var Cipher_name = map[int32] string {
+	1: "AES",
+	2: "RC4",
+}
+var Cipher_value = map[string] int32 {
+	"AES": 1,
+	"RC4": 2,
+}
+func NewCipher(x int32) *Cipher {
+	e := Cipher(x)
+	return &e
+}
+
 type Err int32
 const (
 	Err_NEEDPUBLICKEY = 1
@@ -62,13 +80,27 @@ func NewErr(x int32) *Err {
 	return &e
 }
 
+type CryptoHeader struct {
+	Isencrypted	*bool	"PB(varint,1,req,name=isencrypted)"
+	Hmac	[]byte	"PB(bytes,2,opt,name=hmac)"
+	Key	[]byte	"PB(bytes,3,opt,name=key)"
+	Iv	[]byte	"PB(bytes,4,opt,name=iv)"
+	Checksum	[]byte	"PB(bytes,5,opt,name=checksum)"
+	Ciphermethod	*Cipher	"PB(varint,6,opt,name=ciphermethod,enum=dht.Cipher)"
+	XXX_unrecognized	[]byte
+}
+func (this *CryptoHeader) Reset() {
+	*this = CryptoHeader{}
+}
+func NewCryptoHeader() *CryptoHeader {
+	return new(CryptoHeader)
+}
+
 type Header struct {
 	Type	*PktType	"PB(varint,1,req,name=type,enum=dht.PktType)"
 	Msgid	*int32	"PB(varint,2,req,name=msgid)"
 	Part	*int32	"PB(varint,3,req,name=part)"
-	Hmac	[]byte	"PB(bytes,5,opt,name=hmac)"
 	From	*NodeDescriptor	"PB(bytes,6,opt,name=from)"
-	Isencrypted	*bool	"PB(varint,7,opt,name=isencrypted)"
 	Knowsyou	*bool	"PB(varint,8,req,name=knowsyou)"
 	Relayedfrom	*NodeDescriptor	"PB(bytes,9,opt,name=relayedfrom)"
 	XXX_unrecognized	[]byte
@@ -113,7 +145,7 @@ func NewIgnore() *Ignore {
 type Store struct {
 	Key	[]byte	"PB(bytes,1,req,name=key)"
 	Value	[]byte	"PB(bytes,2,req,name=value)"
-	Ismore	*bool	"PB(varint,3,opt,name=ismore)"
+	Ismore	*bool	"PB(varint,3,req,name=ismore)"
 	XXX_unrecognized	[]byte
 }
 func (this *Store) Reset() {
@@ -144,6 +176,17 @@ func (this *CheckReachability) Reset() {
 }
 func NewCheckReachability() *CheckReachability {
 	return new(CheckReachability)
+}
+
+type Transport struct {
+	Data	[]byte	"PB(bytes,1,req,name=data)"
+	XXX_unrecognized	[]byte
+}
+func (this *Transport) Reset() {
+	*this = Transport{}
+}
+func NewTransport() *Transport {
+	return new(Transport)
 }
 
 type NodeDescriptor struct {
@@ -209,5 +252,6 @@ func NewAnswerError() *AnswerError {
 
 func init() {
 	proto.RegisterEnum("dht.PktType", PktType_name, PktType_value)
+	proto.RegisterEnum("dht.Cipher", Cipher_name, Cipher_value)
 	proto.RegisterEnum("dht.Err", Err_name, Err_value)
 }

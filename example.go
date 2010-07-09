@@ -17,10 +17,10 @@ func main() {
     time.Sleep(1000000000)
     key := dht.Key{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20}
     valuestring := "这根俺还子在跑步！"
-    value := (bytes.NewBufferString(valuestring)).Bytes()
+    value := bytes.NewBufferString(valuestring)
     fmt.Printf("Trying a iterativestore now\n")
     node.IterativeStore(key,value)
     _,v := node.IterativeFindValue(key)
     fmt.Printf("Found value: %s", v)
-    time.Sleep(99999999999999999)   
+    time.Sleep(99999999999999999)
 }

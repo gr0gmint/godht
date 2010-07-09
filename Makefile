@@ -8,10 +8,10 @@ include $(GOROOT)/src/Make.$(GOARCH)
 
 TARG=dht
 GOFILES=\
+	datastore.go\
 	node.go\
 	hotcode.go\
-	dht.pb.go\
-	datastore.go
+	dht.pb.go
 
 include $(GOROOT)/src/Make.pkg
 dht.pb.go:
