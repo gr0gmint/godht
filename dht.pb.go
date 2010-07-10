@@ -18,6 +18,7 @@ const (
 	PktType_ANSWERPONG = 51
 	PktType_ANSWERNODES = 52
 	PktType_ANSWERERROR = 53
+	PktType_DECRYPTERROR = 54
 )
 var PktType_name = map[int32] string {
 	1: "PING",
@@ -28,6 +29,7 @@ var PktType_name = map[int32] string {
 	51: "ANSWERPONG",
 	52: "ANSWERNODES",
 	53: "ANSWERERROR",
+	54: "DECRYPTERROR",
 }
 var PktType_value = map[string] int32 {
 	"PING": 1,
@@ -38,6 +40,7 @@ var PktType_value = map[string] int32 {
 	"ANSWERPONG": 51,
 	"ANSWERNODES": 52,
 	"ANSWERERROR": 53,
+	"DECRYPTERROR": 54,
 }
 func NewPktType(x int32) *PktType {
 	e := PktType(x)
@@ -87,6 +90,7 @@ type CryptoHeader struct {
 	Iv	[]byte	"PB(bytes,4,opt,name=iv)"
 	Checksum	[]byte	"PB(bytes,5,opt,name=checksum)"
 	Ciphermethod	*Cipher	"PB(varint,6,opt,name=ciphermethod,enum=dht.Cipher)"
+	Needkey	*bool	"PB(varint,7,req,name=needkey)"
 	XXX_unrecognized	[]byte
 }
 func (this *CryptoHeader) Reset() {
@@ -100,6 +104,7 @@ type Header struct {
 	Type	*PktType	"PB(varint,1,req,name=type,enum=dht.PktType)"
 	Msgid	*int32	"PB(varint,2,req,name=msgid)"
 	Part	*int32	"PB(varint,3,req,name=part)"
+	Timestamp	*int64	"PB(varint,4,req,name=timestamp)"
 	From	*NodeDescriptor	"PB(bytes,6,opt,name=from)"
 	Knowsyou	*bool	"PB(varint,8,req,name=knowsyou)"
 	Relayedfrom	*NodeDescriptor	"PB(bytes,9,opt,name=relayedfrom)"
@@ -248,6 +253,16 @@ func (this *AnswerError) Reset() {
 }
 func NewAnswerError() *AnswerError {
 	return new(AnswerError)
+}
+
+type DecryptError struct {
+	XXX_unrecognized	[]byte
+}
+func (this *DecryptError) Reset() {
+	*this = DecryptError{}
+}
+func NewDecryptError() *DecryptError {
+	return new(DecryptError)
 }
 
 func init() {

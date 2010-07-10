@@ -9,6 +9,7 @@ enum PktType {
     ANSWERPONG = 51;
     ANSWERNODES = 52;
     ANSWERERROR = 53;
+    DECRYPTERROR = 54;
 }
 enum Cipher {
     AES = 1;
@@ -22,12 +23,14 @@ message CryptoHeader {
     optional bytes iv = 4;
     optional bytes checksum = 5;
     optional Cipher ciphermethod = 6;
+    required bool needkey = 7;
 }
 
 message Header { 
     required PktType type = 1;
     required int32 msgid = 2;
     required int32 part = 3; //Kinda like conversation packet counter
+    required int64 timestamp = 4;
     optional NodeDescriptor from = 6;
     required bool knowsyou = 8;
     optional NodeDescriptor relayedfrom = 9;
@@ -62,6 +65,7 @@ message Transport {
 }
 
 
+
 message NodeDescriptor { //Like a "from" field
     required int32 udpport = 1;
     required bool behindnat = 2;
@@ -89,4 +93,7 @@ enum Err {
 }
 message AnswerError {
     required Err error = 1;
+}
+message DecryptError {
+    
 }

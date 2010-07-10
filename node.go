@@ -9,6 +9,8 @@ import "crypto/x509"
 import "crypto/rand"
 import "crypto/sha1"
 import "crypto/hmac"
+import "crypto/aes"
+import "crypto/block"
 import random "rand"
 import "time"
 import "encoding/binary"
@@ -30,6 +32,7 @@ const (
     MAXPKTSIZE = 4096
     MAXSTORESIZE = 64000
     TIMEOUT = 2000000000
+    KEYSIZE = 16
 
 )
 type Key []byte
@@ -168,12 +171,14 @@ type UDPSession struct {
     HotRoutine
     Node *Node
     RecpNode *InNodeDescriptor
-    IdMap map[int32]chan Buf
-    Default chan Buf
+    IdMap map[int32]chan hdr_n_data
+    Default chan hdr_n_data
     NeedToSendDesc bool //If the repicient needs the publickey
     NodeIsAdded bool //If the node is added to bucket
     First bool //Keep track of the first packet sent
+    NeedToSendKey bool
     EncryptKey []byte
+    DecryptKey []byte
 }
 
 
@@ -187,7 +192,29 @@ func (b Buf) Read(p []byte) (int, os.Error) {
     return len(b), nil
 }
 
+func ReadAll (r io.Reader, b []byte)  {
+    l := len(b)
+    total := 0
+    var n int
+    for {
+        if l-total < KEYSIZE {
+            return
+        } else {
+            n, _ = r.Read(b[total:total+KEYSIZE])
+        }
+        total += n
+        if n == 0 { break }
 
+    }
+}
+func WriteAll (w io.Writer, b []byte) {
+    total := 0
+    for {
+        n, _ := w.Write(b[total:])
+        if n == 0 { break }
+        total += n
+    }
+}
 
 
 func NewMsgId() int32 {
@@ -265,78 +292,175 @@ func (this *UDPSession) DecodePacket(data Buf) (*Header,[]byte, os.Error) {
         return nil,data,os.ENOMEM
     }
     err := binary.Read(data[0:4], binary.BigEndian, &chdrlen)
-        if err != nil { return nil,data,err }
-    err = binary.Read(data[4:8], binary.BigEndian, &hdrlen)
-        if err != nil { return nil,data,err }
-    err = binary.Read(data[8:12], binary.BigEndian, &datalen)
-        if err != nil { return nil,data,err }
-    if !(hdrlen < 2048 && datalen <= 8096 ) {
-        fmt.Printf("Packet too big!\n")
-        return nil,data,os.ENOMEM
-    }
-    fmt.Printf("chdrlen = %d, hdrlen = %d, datalen = %d\n", chdrlen, hdrlen, datalen)
+        if err != nil { return nil,nil,err }
+    payload := data[4+chdrlen:]
+    fmt.Printf("Length of payload = %d\n", len(payload))
+        
+
+
+    fmt.Printf("chdrlen = %d, len(payload) = %d\n", chdrlen, len(payload))
     cryptoheader := NewCryptoHeader()
-    header := NewHeader()
-    err = proto.Unmarshal(data[12:12+chdrlen], cryptoheader)
+    err = proto.Unmarshal(data[4:4+chdrlen], cryptoheader)
     if err != nil {
         fmt.Printf("Returning error\n")
         return nil,data,err
     }
-    
+    if *cryptoheader.Needkey {
+        fmt.Printf("Recipient needs key\n")
+        this.NeedToSendKey = true
+    }
     //VERIFY AND/OR DECRYPT
-    if cryptoheader.Hmac != nil {
-        key := &[...]byte("JOE DEN GAMLE SWINGER")
-         hmac.NewSHA1(key)
+    if cryptoheader.Key != nil {
+        h := sha1.New()
+        this.DecryptKey, err = rsa.DecryptOAEP(h,rand.Reader, this.Node.Keypair, cryptoheader.Key, &[...]byte("GONUTS")) 
+        fmt.Printf("DecryptKey = %x\n", this.DecryptKey)
     }
     
-    err = proto.Unmarshal(data[12+chdrlen:12+chdrlen+hdrlen], header)
+    if *cryptoheader.Isencrypted && this.DecryptKey == nil {
+        return nil,nil,os.NewError("Has no decryptionkey")
+    }
+    if  cryptoheader.Hmac != nil && this.DecryptKey != nil {
+        fmt.Printf("Payload: %s\n", payload)
+        hm := hmac.NewSHA1(this.DecryptKey)
+        hm.Write(payload)
+        sum := hm.Sum()
+        fmt.Printf("HMAC? %x =?= %x\n", cryptoheader.Hmac, sum)
+        if bytes.Compare(cryptoheader.Hmac, sum) == 0 {
+            fmt.Printf("HMAC verified\n")
+            
+        } else {
+            return nil,nil,os.NewError("HMAC didn't verify\n")
+        }
+    }
+    if *cryptoheader.Isencrypted {
+        fmt.Printf("Packet is encrypted! Decrypting!\n")
+        cipher,_ := aes.NewCipher(this.DecryptKey)
+        ciphertext := bytes.NewBuffer(payload)
+        cbc := block.NewCBCDecrypter(cipher, this.DecryptKey, ciphertext)
+        fmt.Printf("%x\n", this.DecryptKey)
+        ReadAll(cbc,payload)
+    }
+
+    err = binary.Read(payload[0:4], binary.BigEndian, &hdrlen)
+        if err != nil { return nil,data,err }
+    err = binary.Read(payload[4:8], binary.BigEndian, &datalen)
+        if err != nil { return nil,data,err }
+    fmt.Printf("hdrlen = %d, datalen = %d\n", hdrlen, datalen)
+    if !(hdrlen < 2048 && datalen <= 8096 ) {
+        fmt.Printf("Packet too big!\n")
+        return nil,data,os.ENOMEM
+    }
+    hdrdata := payload[8:8+hdrlen]
+    newdata := payload[8+hdrlen:]
+    header := NewHeader()
+    
+    err = proto.Unmarshal(hdrdata, header)
     if err != nil {
         fmt.Printf("Header ···· Returning error\n")
-        return nil,data,err
+        return nil,nil,err
+    }
+    //Verify timestamp
+    difference := *header.Timestamp - time.Seconds()
+    if difference < -(5*60) || difference > (5*60) {
+        return nil,nil,os.NewError("Timestamp is too far off\n")
     }
     
-    newdata := make(Buf, datalen)
-    copy(newdata,data[12+chdrlen+hdrlen:12+chdrlen+hdrlen+datalen])
+    newdata2 := make(Buf, datalen)
+    copy(newdata2,newdata)
     
-    return header, newdata,nil
+    return header, newdata2,nil
 }
  
-func (this *UDPSession) EncodePacket(data []byte, t,id,part int32, hmac,encrypted bool) []byte {
+func (this *UDPSession) EncodePacket(data []byte, t,id,part int32, ishmac,encrypted bool) []byte {
         newt := NewPktType(t)
-        cryptoheader := NewCryptoHeader()
-        cryptoheader.Isencrypted = proto.Bool(encrypted)
-        if encrypted {
-            
-        }
-        chdrdata,err := proto.Marshal(cryptoheader)
-        if err != nil {
-            fmt.Printf("%s\n", err)
-            return nil
-        }
+  
         
         header := NewHeader()
         header.Type = newt
         header.Msgid = proto.Int32(id)
         header.Part = proto.Int32(part)
+        header.Timestamp = proto.Int64(time.Seconds())
+        fmt.Printf("NodeIsAdded = %t\n", this.NodeIsAdded)
         header.Knowsyou = proto.Bool(this.NodeIsAdded)
         if this.NeedToSendDesc {
             //Include publickey
+            fmt.Printf("NeedToSendDesc is set!\n")
             header.From = this.Node.Descriptor()
+
+        }
+        if this.RecpNode == nil {
+            encrypted = false
         }
         hdrdata,err := proto.Marshal(header)
         if err != nil {
             fmt.Printf("%s\n", err)
             return nil
         }
-        chdrlen := uint32(len(chdrdata))
+        
         hdrlen := uint32(len(hdrdata))
         datalen :=  uint32(len(data))
+        
+        p := bytes.NewBufferString("")
+        binary.Write(p, binary.BigEndian, [2]uint32{hdrlen,datalen})
+        p.Write(hdrdata)
+        p.Write(data)
+        payload := p.Bytes()
+        
+        cryptoheader := NewCryptoHeader()
+        cryptoheader.Isencrypted = proto.Bool(encrypted)
+        if this.DecryptKey == nil {
+            cryptoheader.Needkey = proto.Bool(true)
+        } else {
+            cryptoheader.Needkey = proto.Bool(false)
+         }
+        if this.RecpNode != nil {
+            if this.EncryptKey == nil {
+                this.EncryptKey = make([]byte, KEYSIZE)
+                rand.Reader.Read(this.EncryptKey)
+                fmt.Printf("EncryptKey = %x\n", this.EncryptKey)
+            }
+            
+            if this.NeedToSendKey { //Recipient hasn't got EncryptKey yet
+                h := sha1.New()
+                fmt.Printf("Encrypting key!\n")
+                cryptoheader.Key, err = rsa.EncryptOAEP(h, rand.Reader, this.RecpNode.Publickey, this.EncryptKey, &[...]byte("GONUTS"))
+                this.NeedToSendKey = false
+            }
+            
+            if encrypted {
+                fmt.Printf("Ciphertext with key: %x\n", this.EncryptKey)
+                cipher,_ := aes.NewCipher(this.EncryptKey)
+                ciphertext := bytes.NewBufferString("")
+                cbc := block.NewCBCEncrypter(cipher, this.EncryptKey, ciphertext)
+                cbc.Write(payload)
+                payload = ciphertext.Bytes()
+            }
+            if ishmac {
+
+                hm := hmac.NewSHA1(this.EncryptKey)
+                hm.Write(payload)
+                cryptoheader.Hmac = hm.Sum()
+
+                                fmt.Printf("HMAC'ing: %x\n", cryptoheader.Hmac)
+            }
+
+        }
+        fmt.Printf("Sending payload: %s\n", bytetobuf(payload))
+        chdrdata,err := proto.Marshal(cryptoheader)
+        
+        if err != nil {
+            fmt.Printf("%s\n", err)
+            return nil
+        }   
+        
+        
+        chdrlen := uint32(len(chdrdata))
         fmt.Printf("Sending with: chdrlen = %d, hdrlen = %d, datalen = %d\n", chdrlen, hdrlen, datalen)
-        buffer := make(Buf, 12+chdrlen+hdrlen+datalen)
-        binary.Write(buffer, binary.BigEndian, [3]uint32{chdrlen,hdrlen,datalen})
-        copy(buffer[12:12+int(chdrlen)],chdrdata)
-        copy(buffer[12+int(chdrlen):12+int(chdrlen)+int(hdrlen)], hdrdata) 
-        copy(buffer[12+int(chdrlen)+int(hdrlen):12+int(chdrlen)+int(hdrlen)+int(datalen)], data) 
+        buffer := make(Buf, 4+chdrlen+uint32(len(payload)))
+        binary.Write(buffer, binary.BigEndian, [1]uint32{chdrlen})
+
+        copy(buffer[4:],chdrdata)
+        copy(buffer[4+chdrlen:], payload)
         return buffer
 }
 
@@ -348,10 +472,11 @@ func NewUDPSession(raddr *net.UDPAddr, node *Node, udphandler *UDPHandler) *UDPS
     c.Handler = udphandler
     c.Node = node
     c.First = true
+    c.NeedToSendKey = true
     if c.Handler.FromMap[raddr.String()] == nil {
     c.Handler.FromMap[raddr.String()] = make(chan Buf)
     }
-    c.IdMap = make(map[int32]chan Buf)
+    c.IdMap = make(map[int32]chan hdr_n_data)
     go c.HotStart()
     
     return c
@@ -425,7 +550,7 @@ func (this *UDPSession) _handleStore(header *Header, data []byte) {
 
 func (this *UDPSession) Start() {
     fmt.Printf("UDPSession started\n")
-    this.Default = make(chan Buf)
+    this.Default = make(chan hdr_n_data)
     saddr := this.RAddr.String()
     if this.Handler.FromMap[saddr] == nil {
         this.Handler.FromMap[saddr] = make (chan Buf)
@@ -435,7 +560,7 @@ func (this *UDPSession) Start() {
         for {
             packet := <-packetchan
             if packet == nil {fmt.Printf("Error reading from UDPHandler"); break }
-            header,_,err := this.DecodePacket(packet)
+            header,data,err := this.DecodePacket(packet)
             if err != nil {
                 fmt.Printf("Start·E: %s\n", err)
                 continue
@@ -447,11 +572,11 @@ func (this *UDPSession) Start() {
 
             if *header.Part >  0 {
                 if this.IdMap[*header.Msgid] == nil{
-                    this.IdMap[*header.Msgid] = make(chan Buf)
+                    this.IdMap[*header.Msgid] = make(chan hdr_n_data)
                 }
-                go func() { fmt.Printf("this.IdMap[%d]<-packet\n", *header.Msgid); this.IdMap[*header.Msgid]<-packet}()
+                go func() { fmt.Printf("this.IdMap[%d]<-packet\n", *header.Msgid); this.IdMap[*header.Msgid]<-hdr_n_data{header,data}}()
             } else {
-                go func() { this.Default <- packet }()
+                go func() { this.Default <- hdr_n_data{header,data} }()
             }
             
             
@@ -492,12 +617,12 @@ func (this *UDPSession) Start() {
                 }
                 adata,err := proto.Marshal(answer)
                 if err != nil { fmt.Printf("E: %s\n", err) }
-                this.Send(adata, PktType_ANSWERNODES, *header.Msgid,1,false,false)
+                this.Send(adata, PktType_ANSWERNODES, *header.Msgid,1,true,true)
             case PktType_PING:
                 a := NewPong()
                 adata,err := proto.Marshal(a)
                 if err != nil  {fmt.Printf("E: %s\n", err)}
-                this.Send(adata, PktType_ANSWERPONG,*header.Msgid, 1, false,false)
+                this.Send(adata, PktType_ANSWERPONG,*header.Msgid, 1, true,false)
         }
     }
     
@@ -570,7 +695,7 @@ func (this *UDPSession) Read(msgid int32, timeout int64)(*Header, []byte) {
         
         self := shared["self"].(*GenericHot)
         */
-        var data Buf
+        var data hdr_n_data
         var ticker *time.Ticker
         if timeout != 0  {
             ticker = time.NewTicker(timeout)
@@ -591,22 +716,9 @@ func (this *UDPSession) Read(msgid int32, timeout int64)(*Header, []byte) {
             } else {
                 data = <-this.Default
             }
-            if this.RecpNode != nil {
-            this.Node.MoveKeyToTop(this.RecpNode.Nodeid) //There is activity, so we move the nodeid to the top of the bucket
-            }
-            header,mdata,err := this.DecodePacket(data)
-            
-            //Set the NeedToSendDesc flag, if "Knowsyou" is set in packet
-            if *header.Knowsyou { this.NeedToSendDesc = false } else { this.NeedToSendDesc = true }
-            
-            if err != nil { fmt.Printf("E: %s\n", err); /* self.Answer<-hdr_n_data{nil,nil}*/ return header,mdata} else {
-              //If this is some of the first packets received  - needs perhaps to be added to bucket
-              if !this.NodeIsAdded { this.AddRecpNode(header.From) }
-              
-              return header,mdata
-            }
+  
         } else {
-            if d,ok := this.IdMap[msgid]; !ok || d == nil { fmt.Printf("make(chan Buf)\n"); this.IdMap[msgid] = make(chan Buf) }
+            if d,ok := this.IdMap[msgid]; !ok || d == nil { fmt.Printf("make(chan Buf)\n"); this.IdMap[msgid] = make(chan hdr_n_data) }
             if timeout == 0 {
                 data =  <-this.IdMap[msgid]
                 
@@ -621,16 +733,22 @@ func (this *UDPSession) Read(msgid int32, timeout int64)(*Header, []byte) {
                         return nil,nil 
                 }
             }
-            header,mdata,err := this.DecodePacket(data)
-            
-            if err != nil {fmt.Printf("Read·E: %s\n", err) }
-            
-            if err != nil { return nil,nil} else {
-              //self.Answer<-hdr_n_data{header,mdata}
-              if !this.NodeIsAdded { this.AddRecpNode(header.From) }
-              return header,mdata
+        }
+                  if this.RecpNode != nil {
+            this.Node.MoveKeyToTop(this.RecpNode.Nodeid) //There is activity, so we move the nodeid to the top of the bucket
             }
-        }   
+            header := data.header
+            mdata := data.data
+            if header == nil {
+                return nil,nil
+            }
+            //Set the NeedToSendDesc flag, if "Knowsyou" is set in packet
+            fmt.Printf("header Knowsyou = %t\n", *header.Knowsyou)
+            if *header.Knowsyou {fmt.Printf("Setting NeedToSendDesc\n"); this.NeedToSendDesc = false } else { this.NeedToSendDesc = true }
+              //If this is some of the first packets received  - needs perhaps to be added to bucket
+              if !this.NodeIsAdded { this.AddRecpNode(header.From) }
+              
+              return header,mdata
         /*
     })
     this.QueryHot(h)
@@ -639,7 +757,6 @@ func (this *UDPSession) Read(msgid int32, timeout int64)(*Header, []byte) {
    return answer.header,answer.data
    */
    
-            return nil,nil
 }
 
 func (this *UDPSession) Send(data []byte, t, id,part  int32,hmac,encrypted bool) bool {
@@ -667,7 +784,7 @@ func (this *UDPSession) Ping() bool {
     msgid := NewMsgId()
     ping_packet := NewPing()
     ping_data,_ := proto.Marshal(ping_packet)
-    this.Send(ping_data, PktType_PING, msgid, 0, false,false)
+    this.Send(ping_data, PktType_PING, msgid, 0, true,false)
     header,data := this.Read(msgid,2000000000)
     if header == nil || data == nil {
         return false
@@ -1101,7 +1218,6 @@ func (this *Node) IterativeFindNode(key Key) *Bucket {
                             }
                            if !already {
                                 alreadyAsked.Push(inode)
-                                
                             }
                             
                                 donotadd := false
@@ -1435,4 +1551,7 @@ func (this *Node) Bootstrap(port int, known string, privatekey string) bool {
 
 func keytobyte(key Key) []byte {
     return key
+}
+func bytetobuf(b []byte) Buf {
+    return b
 }
