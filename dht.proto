@@ -60,10 +60,8 @@ message CheckReachability {
     required int32 port = 1;
 }
 
-message Transport {
-    required bytes data = 1;
+message Dummy {
 }
-
 
 
 message NodeDescriptor { //Like a "from" field

@@ -208,9 +208,19 @@ func ReadAll (r io.Reader, b []byte)  {
     }
 }
 func WriteAll (w io.Writer, b []byte) {
+    l := len(b)
     total := 0
+    var n int
     for {
-        n, _ := w.Write(b[total:])
+        if l-total < KEYSIZE  {
+            joe := [16]byte{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}
+            nb := bytes.NewBuffer(b[total:])
+            nb.Write(joe[0:16-(l-total)])
+            w.Write(nb.Bytes())
+            break
+        } else {
+            n, _ = w.Write(b[total:total+KEYSIZE])
+        }
         if n == 0 { break }
         total += n
     }
@@ -345,13 +355,13 @@ func (this *UDPSession) DecodePacket(data Buf) (*Header,[]byte, os.Error) {
         if err != nil { return nil,data,err }
     err = binary.Read(payload[4:8], binary.BigEndian, &datalen)
         if err != nil { return nil,data,err }
-    fmt.Printf("hdrlen = %d, datalen = %d\n", hdrlen, datalen)
+    fmt.Printf("hdrlen = %d, datalen = %d, len(payload) = %d\n", hdrlen, datalen,len(payload))
     if !(hdrlen < 2048 && datalen <= 8096 ) {
         fmt.Printf("Packet too big!\n")
         return nil,data,os.ENOMEM
     }
     hdrdata := payload[8:8+hdrlen]
-    newdata := payload[8+hdrlen:]
+    newdata := payload[8+hdrlen:8+hdrlen+datalen]
     header := NewHeader()
     
     err = proto.Unmarshal(hdrdata, header)
@@ -405,6 +415,7 @@ func (this *UDPSession) EncodePacket(data []byte, t,id,part int32, ishmac,encryp
         p.Write(hdrdata)
         p.Write(data)
         payload := p.Bytes()
+        fmt.Printf("len(payload) before crypto = %d\n", len(payload))
         
         cryptoheader := NewCryptoHeader()
         cryptoheader.Isencrypted = proto.Bool(encrypted)
@@ -432,7 +443,7 @@ func (this *UDPSession) EncodePacket(data []byte, t,id,part int32, ishmac,encryp
                 cipher,_ := aes.NewCipher(this.EncryptKey)
                 ciphertext := bytes.NewBufferString("")
                 cbc := block.NewCBCEncrypter(cipher, this.EncryptKey, ciphertext)
-                cbc.Write(payload)
+                WriteAll(cbc,payload)
                 payload = ciphertext.Bytes()
             }
             if ishmac {
@@ -445,7 +456,7 @@ func (this *UDPSession) EncodePacket(data []byte, t,id,part int32, ishmac,encryp
             }
 
         }
-        fmt.Printf("Sending payload: %s\n", bytetobuf(payload))
+        fmt.Printf("len(payload) after crypto = %d\n", len(payload))
         chdrdata,err := proto.Marshal(cryptoheader)
         
         if err != nil {
