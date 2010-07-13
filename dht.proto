@@ -5,6 +5,8 @@ enum PktType {
     STORE = 2;
     FINDNODE = 3;
     CHECKREACHABILITY = 5;
+    STREAM = 6;
+    
     ANSWEROK = 50;
     ANSWERPONG = 51;
     ANSWERNODES = 52;
@@ -48,12 +50,19 @@ message Ignore {
 message Store {
     required bytes key = 1;
     required bytes value = 2;
-    
     required bool ismore = 3;
 }
 message FindNode {
     required bytes key = 1;
     required bool findvalue = 2;
+}
+
+message Stream {
+    required int32 port = 1;
+    required bool close = 2;
+    optional bytes data = 3;
+    required bool ack = 4;
+    
 }
 
 message CheckReachability {

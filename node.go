@@ -53,6 +53,23 @@ type Bucket struct {
     sortKey Key
 }
 
+type streamsyn struct {
+    session *UDPSession
+    handler *StreamHandler
+    data []byte
+}
+type StreamListener struct {
+    Ports map[int](chan streamsyn)
+}
+func NewStreamListener() *StreamListener {
+    s := new(StreamDealer)
+    s.Ports = make(map[int](chan streamsyn))
+}
+
+type StreamHandler struct {
+    
+}
+
 type Atom struct {
     HotRoutine
 }
@@ -139,6 +156,7 @@ type Node struct {
     Handler *UDPHandler
     TotalNodes int
     Data Datastore
+    StreamListener *StreamListener
 }
 
 type Listener struct {
@@ -634,11 +652,29 @@ func (this *UDPSession) Start() {
                 adata,err := proto.Marshal(a)
                 if err != nil  {fmt.Printf("E: %s\n", err)}
                 this.Send(adata, PktType_ANSWERPONG,*header.Msgid, 1, true,false)
+                
+            case PktType_STREAM:
+                s := NewStream()
+                err := proto.Unmarshal(data, s)
+                if err != nil {
+                    go this._handleStream(header,s)
+                }
         }
     }
     
 }
 
+func (this *UDPSession) _handleStream(header *Header, s *Stream) {
+    port := *s.Port
+    handler := NewStreamHandler()
+    this.Node.StreamListener.AddStream(port,handler, this)
+    
+}
+
+
+func (this *StreamListener) AddStream(port int, handler *StreamHandler, session *UDPSession) {
+    ch, ok := this.Ports
+}
 
 func DecodePublicKey(p *Publickey) *rsa.PublicKey {
     pk := new(rsa.PublicKey)
@@ -952,6 +988,7 @@ func NewNode() *Node {
     n := new(Node)
     n.Buckets = make(map[int]*Bucket)
     n.Data = NewSimpleDatastore()
+    n.StreamListener := NewStreamListener()
     go n.HotStart()
     return n
 }
@@ -1510,6 +1547,8 @@ func GeneratePrivateKey(filename string) {
         f.Close()
     
 }
+
+
 func (this *Node) Bootstrap(port int, known string, privatekey string) bool {
     knownhost,err := net.ResolveUDPAddr(known)
     if err != nil {
