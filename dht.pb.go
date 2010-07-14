@@ -111,6 +111,7 @@ type Header struct {
 	From	*NodeDescriptor	"PB(bytes,6,opt,name=from)"
 	Knowsyou	*bool	"PB(varint,8,req,name=knowsyou)"
 	Relayedfrom	*NodeDescriptor	"PB(bytes,9,opt,name=relayedfrom)"
+	Syn	*bool	"PB(varint,10,opt,name=syn)"
 	XXX_unrecognized	[]byte
 }
 func (this *Header) Reset() {

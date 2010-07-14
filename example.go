@@ -22,5 +22,17 @@ func main() {
     fmt.Printf("Returned from IterativeStore\n")
     _,v := node.IterativeFindValue(key)
     fmt.Printf("Found value: %s", v)
-    time.Sleep(99999999999999999)
+
+    connect_nodeid := dht.Bytetokey(&[...]byte("\x75\xb7\x7c\xdc\x82\x20\x46\xfa\x63\x13\x10\xd8\x66\x53\x97\x21\x93\xc1\xcb\x97"))
+    h := node.StreamConnect(connect_nodeid, 80)
+    if h != nil {
+     h.Write(connect_nodeid, true)
+    }
+        go func() {
+       j:= node.AcceptStream(80)
+       fmt.Printf("AcceptStream\n")
+       j.Read()
+    }()
+    time.Sleep(11231928379128732)
+    
 }
