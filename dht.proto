@@ -30,7 +30,7 @@ message CryptoHeader {
 
 message Header { 
     required PktType type = 1;
-    required int32 msgid = 2;
+    required int32 streamid = 2;
     required int32 part = 3; //Kinda like conversation packet counter
     required int64 timestamp = 4;
     optional NodeDescriptor from = 6;
@@ -62,6 +62,7 @@ message Stream {
     required bool close = 2;
     optional bytes data = 3;
     required bool ack = 4;
+    required bool error = 5;
     
 }
 

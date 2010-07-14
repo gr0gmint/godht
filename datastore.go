@@ -59,6 +59,6 @@ func (this *SimpleDatastore) Set(key Key, value io.Reader) {
             e.Value.Write(b[0:n])
         } else {break}
       }
-      fmt.Printf("Storing something\n")
+      fmt.Printf("Storing something: %s\n", e.Value.Bytes())
       this.Data.Push(e)  
 }

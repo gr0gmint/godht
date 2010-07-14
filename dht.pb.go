@@ -14,6 +14,7 @@ const (
 	PktType_STORE = 2
 	PktType_FINDNODE = 3
 	PktType_CHECKREACHABILITY = 5
+	PktType_STREAM = 6
 	PktType_ANSWEROK = 50
 	PktType_ANSWERPONG = 51
 	PktType_ANSWERNODES = 52
@@ -25,6 +26,7 @@ var PktType_name = map[int32] string {
 	2: "STORE",
 	3: "FINDNODE",
 	5: "CHECKREACHABILITY",
+	6: "STREAM",
 	50: "ANSWEROK",
 	51: "ANSWERPONG",
 	52: "ANSWERNODES",
@@ -36,6 +38,7 @@ var PktType_value = map[string] int32 {
 	"STORE": 2,
 	"FINDNODE": 3,
 	"CHECKREACHABILITY": 5,
+	"STREAM": 6,
 	"ANSWEROK": 50,
 	"ANSWERPONG": 51,
 	"ANSWERNODES": 52,
@@ -102,7 +105,7 @@ func NewCryptoHeader() *CryptoHeader {
 
 type Header struct {
 	Type	*PktType	"PB(varint,1,req,name=type,enum=dht.PktType)"
-	Msgid	*int32	"PB(varint,2,req,name=msgid)"
+	Streamid	*int32	"PB(varint,2,req,name=streamid)"
 	Part	*int32	"PB(varint,3,req,name=part)"
 	Timestamp	*int64	"PB(varint,4,req,name=timestamp)"
 	From	*NodeDescriptor	"PB(bytes,6,opt,name=from)"
@@ -172,6 +175,21 @@ func NewFindNode() *FindNode {
 	return new(FindNode)
 }
 
+type Stream struct {
+	Port	*int32	"PB(varint,1,req,name=port)"
+	Close	*bool	"PB(varint,2,req,name=close)"
+	Data	[]byte	"PB(bytes,3,opt,name=data)"
+	Ack	*bool	"PB(varint,4,req,name=ack)"
+	Error	*bool	"PB(varint,5,req,name=error)"
+	XXX_unrecognized	[]byte
+}
+func (this *Stream) Reset() {
+	*this = Stream{}
+}
+func NewStream() *Stream {
+	return new(Stream)
+}
+
 type CheckReachability struct {
 	Port	*int32	"PB(varint,1,req,name=port)"
 	XXX_unrecognized	[]byte
@@ -183,15 +201,14 @@ func NewCheckReachability() *CheckReachability {
 	return new(CheckReachability)
 }
 
-type Transport struct {
-	Data	[]byte	"PB(bytes,1,req,name=data)"
+type Dummy struct {
 	XXX_unrecognized	[]byte
 }
-func (this *Transport) Reset() {
-	*this = Transport{}
+func (this *Dummy) Reset() {
+	*this = Dummy{}
 }
-func NewTransport() *Transport {
-	return new(Transport)
+func NewDummy() *Dummy {
+	return new(Dummy)
 }
 
 type NodeDescriptor struct {
