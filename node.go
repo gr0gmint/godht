@@ -101,6 +101,9 @@ func (this *StreamHandler) Start() {
                 s.Close = proto.Bool(false)
                 s.Ack = proto.Bool(false)
                 s.Error = proto.Bool(true)
+                ad, _ := proto.Marshal(s)
+                this.Session.Send(ad, PktType_STREAM, this.Streamid, true,true)
+                continue
             }
             if *s.Ack || *s.Error {
                 go func() { this.AckChan <- s } ()
@@ -108,11 +111,13 @@ func (this *StreamHandler) Start() {
             }
             if s.Data != nil {
                 go func() {this.ReadChan <- s }()
+
             }
             if *s.Close {
                 close(this.ReadChan)
                 close(this.AckChan)
             }
+
         }
     }
 }
@@ -137,11 +142,19 @@ func (this *StreamHandler) Write(data []byte,encrypted bool) {
     
     
 }
-func (this *StreamHandler) Read() []byte, os.Error {
-    if closed(this.ReadChan) {return nil }
+func (this *StreamHandler) Read() ([]byte, os.Error) {
+    if closed(this.ReadChan) {return nil,nil }
     s := <- this.ReadChan
     fmt.Printf("Received stream data: %s\n", s.Data)
-    return s.Data
+
+    a := NewStream()
+    a.Port = proto.Int32(this.Port)
+    a.Close = proto.Bool(*s.Close)
+    a.Ack = proto.Bool(true)
+    a.Error = proto.Bool(false)
+    ad,_ := proto.Marshal(a)
+    this.Session.Send(ad, PktType_STREAM, this.Streamid, true,true)
+    return s.Data, nil
     
 }
 func (this *StreamHandler) Close() {
@@ -795,6 +808,7 @@ func (this *UDPSession) _handleStream(header *Header, s *Stream) {
     fmt.Printf("_handleStream\n")
     port := *s.Port
     handler := NewStreamHandler(this, *header.Streamid, port)
+    go handler.Start()
     go func() { handler.ReadChan <- s }()
     if !this.Node.StreamListener.AddStream(port,handler) {
         return
@@ -1270,10 +1284,10 @@ func (this *Node) StreamConnect(nodeid Key, port int32) *StreamHandler {
         return nil
     }
     closenodes := this.FindCloseNodes(nodeid)
-    if bytes.Compare(closenodes.At(0).Nodeid, nodeid) != 0 {
+    if closenodes.Len() == 0 || bytes.Compare(closenodes.At(0).Nodeid, nodeid) != 0 {
         closenodes = this.IterativeFindNode(nodeid)
     }
-    if bytes.Compare(closenodes.At(0).Nodeid, nodeid) != 0 {
+    if closenodes.Len() ==0 || bytes.Compare(closenodes.At(0).Nodeid, nodeid) != 0 {
         return nil
     }
     return NewStreamHandler(closenodes.At(0).Session, NewId(), port)
