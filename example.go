@@ -2,7 +2,6 @@ package main
 import "dht"
 import "os"
 import "strconv"
-import "time"
 import "bytes"
 import "fmt"
 
@@ -22,7 +21,11 @@ func main() {
     fmt.Printf("Returned from IterativeStore\n")
     _,v := node.IterativeFindValue(key)
     fmt.Printf("Found value: %s\n", v)
-        go func() {
+    if len(os.Args) == 5 {
+    var jsonport int
+    fmt.Sscanf(os.Args[4], "%d", &jsonport)
+    go dht.ListenJSON(node,jsonport)
+    }
         for {
        j:= node.AcceptStream(80)
        fmt.Printf("AcceptStream\n")
@@ -31,23 +34,5 @@ func main() {
        }
        }()
        }
-    }()    
-    connect_nodeid := dht.Bytetokey(&[...]byte("\x75\xb7\x7c\xdc\x82\x20\x46\xfa\x63\x13\x10\xd8\x66\x53\x97\x21\x93\xc1\xcb\x97"))
-    
-
-    h := node.StreamConnect(connect_nodeid, 80)
-        f, _ := os.Open("/dev/urandom", os.O_RDONLY, 0666) 
-        bb := make([]byte, 1000)
-    if h != nil {
-    for {
-         f.Read(bb)
-              fmt.Printf("Sending random stream data\n")
-     h.Write(bb, true)
-              fmt.Printf("Back\n")
-    time.Sleep(100000)
-    }
-    }
-
-    time.Sleep(11231928379128732)
-    
+       
 }

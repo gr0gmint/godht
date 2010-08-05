@@ -11,7 +11,8 @@ GOFILES=\
 	datastore.go\
 	node.go\
 	hotcode.go\
-	dht.pb.go
+	dht.pb.go\
+	jsoninterface.go
 
 include $(GOROOT)/src/Make.pkg
 dht.pb.go:

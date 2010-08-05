@@ -1,6 +1,5 @@
 package dht
 
-import . "container/vector"
 import "bytes"
 import "io"
 import "fmt"
@@ -11,7 +10,7 @@ type Datastore interface {
 }
 
 type SimpleDatastore struct {
-    Data *Vector
+    Data map[string]*SimpleEntry
 }
 type SimpleEntry struct  {
     Key Key
@@ -24,41 +23,34 @@ func NewSimpleEntry() *SimpleEntry {
 }
 func NewSimpleDatastore() *SimpleDatastore {
     s := new(SimpleDatastore)
-    s.Data = new(Vector)
+    s.Data = make(map[string]*SimpleEntry)
     return s
 }
 func (this *SimpleDatastore) Get(key Key) []byte {
-    ch := this.Data.Iter()
-    for {
-        if closed(ch) {return nil}
-        n := (<-ch)
-        if n == nil {return nil}
-        m := n.(*SimpleEntry)
-        if bytes.Compare(key, m.Key) == 0 {
-            return m.Value.Bytes()
-        }
+    if v, ok := this.Data[keytostring(key)]; ok {
+        return v.Value.Bytes()
     }
     return nil
 }
 func (this *SimpleDatastore) Set(key Key, value io.Reader) {
-
-      ch := this.Data.Iter()
-      for {
-        if closed(ch) {break}
-        m := <-ch
-        if m == nil {break}
-        if bytes.Compare(m.(*SimpleEntry).Key, key) == 0 {fmt.Printf("Already got this value\n"); return }
-      }
+        if _, ok := this.Data[keytostring(key)]; ok {
+          return
+        }
         e := NewSimpleEntry()
         
-      e.Key = key
-      b := make([]byte, 3000)
-      for {
-         n, err := value.Read(b)
-         if err == nil {
-            e.Value.Write(b[0:n])
-        } else {break}
-      }
-      fmt.Printf("Storing something: %s\n", e.Value.Bytes())
-      this.Data.Push(e)  
+        e.Key = key
+        b := make([]byte, 3000)
+        for {
+            n, err := value.Read(b)
+            if err == nil {
+                e.Value.Write(b[0:n])
+            } else {break}
+        }
+        fmt.Printf("Storing something: %s\n", e.Value.Bytes())
+        this.Data[keytostring(key)] = e
+}
+
+func keytostring(key Key) string {
+    b := bytes.NewBuffer(key)
+    return b.String()
 }
