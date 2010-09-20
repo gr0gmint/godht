@@ -81,6 +81,7 @@ message NodeDescriptor { //Like a "from" field
     required bytes nodeid = 3;
     optional Publickey publickey = 4;
     optional bytes ipaddr = 5;
+    optional bytes rendevouz = 6;
 }
 message Publickey {
     required bytes modulus = 1;

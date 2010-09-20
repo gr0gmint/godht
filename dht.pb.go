@@ -99,9 +99,6 @@ type CryptoHeader struct {
 func (this *CryptoHeader) Reset() {
 	*this = CryptoHeader{}
 }
-func NewCryptoHeader() *CryptoHeader {
-	return new(CryptoHeader)
-}
 
 type Header struct {
 	Type	*PktType	"PB(varint,1,req,name=type,enum=dht.PktType)"
@@ -111,14 +108,11 @@ type Header struct {
 	From	*NodeDescriptor	"PB(bytes,6,opt,name=from)"
 	Knowsyou	*bool	"PB(varint,8,req,name=knowsyou)"
 	Relayedfrom	*NodeDescriptor	"PB(bytes,9,opt,name=relayedfrom)"
-	Syn	*bool	"PB(varint,10,opt,name=syn)"
+	Syn	*bool	"PB(varint,10,req,name=syn)"
 	XXX_unrecognized	[]byte
 }
 func (this *Header) Reset() {
 	*this = Header{}
-}
-func NewHeader() *Header {
-	return new(Header)
 }
 
 type Ping struct {
@@ -127,9 +121,6 @@ type Ping struct {
 func (this *Ping) Reset() {
 	*this = Ping{}
 }
-func NewPing() *Ping {
-	return new(Ping)
-}
 
 type Pong struct {
 	XXX_unrecognized	[]byte
@@ -137,18 +128,12 @@ type Pong struct {
 func (this *Pong) Reset() {
 	*this = Pong{}
 }
-func NewPong() *Pong {
-	return new(Pong)
-}
 
 type Ignore struct {
 	XXX_unrecognized	[]byte
 }
 func (this *Ignore) Reset() {
 	*this = Ignore{}
-}
-func NewIgnore() *Ignore {
-	return new(Ignore)
 }
 
 type Store struct {
@@ -160,9 +145,6 @@ type Store struct {
 func (this *Store) Reset() {
 	*this = Store{}
 }
-func NewStore() *Store {
-	return new(Store)
-}
 
 type FindNode struct {
 	Key	[]byte	"PB(bytes,1,req,name=key)"
@@ -171,9 +153,6 @@ type FindNode struct {
 }
 func (this *FindNode) Reset() {
 	*this = FindNode{}
-}
-func NewFindNode() *FindNode {
-	return new(FindNode)
 }
 
 type Stream struct {
@@ -187,9 +166,6 @@ type Stream struct {
 func (this *Stream) Reset() {
 	*this = Stream{}
 }
-func NewStream() *Stream {
-	return new(Stream)
-}
 
 type CheckReachability struct {
 	Port	*int32	"PB(varint,1,req,name=port)"
@@ -198,18 +174,12 @@ type CheckReachability struct {
 func (this *CheckReachability) Reset() {
 	*this = CheckReachability{}
 }
-func NewCheckReachability() *CheckReachability {
-	return new(CheckReachability)
-}
 
 type Dummy struct {
 	XXX_unrecognized	[]byte
 }
 func (this *Dummy) Reset() {
 	*this = Dummy{}
-}
-func NewDummy() *Dummy {
-	return new(Dummy)
 }
 
 type NodeDescriptor struct {
@@ -218,13 +188,11 @@ type NodeDescriptor struct {
 	Nodeid	[]byte	"PB(bytes,3,req,name=nodeid)"
 	Publickey	*Publickey	"PB(bytes,4,opt,name=publickey)"
 	Ipaddr	[]byte	"PB(bytes,5,opt,name=ipaddr)"
+	Rendevouz	[]byte	"PB(bytes,6,opt,name=rendevouz)"
 	XXX_unrecognized	[]byte
 }
 func (this *NodeDescriptor) Reset() {
 	*this = NodeDescriptor{}
-}
-func NewNodeDescriptor() *NodeDescriptor {
-	return new(NodeDescriptor)
 }
 
 type Publickey struct {
@@ -235,9 +203,6 @@ type Publickey struct {
 func (this *Publickey) Reset() {
 	*this = Publickey{}
 }
-func NewPublickey() *Publickey {
-	return new(Publickey)
-}
 
 type AnswerOk struct {
 	Ok	*bool	"PB(varint,1,req,name=ok)"
@@ -245,9 +210,6 @@ type AnswerOk struct {
 }
 func (this *AnswerOk) Reset() {
 	*this = AnswerOk{}
-}
-func NewAnswerOk() *AnswerOk {
-	return new(AnswerOk)
 }
 
 type AnswerFindNode struct {
@@ -258,9 +220,6 @@ type AnswerFindNode struct {
 func (this *AnswerFindNode) Reset() {
 	*this = AnswerFindNode{}
 }
-func NewAnswerFindNode() *AnswerFindNode {
-	return new(AnswerFindNode)
-}
 
 type AnswerError struct {
 	Error	*Err	"PB(varint,1,req,name=error,enum=dht.Err)"
@@ -269,18 +228,12 @@ type AnswerError struct {
 func (this *AnswerError) Reset() {
 	*this = AnswerError{}
 }
-func NewAnswerError() *AnswerError {
-	return new(AnswerError)
-}
 
 type DecryptError struct {
 	XXX_unrecognized	[]byte
 }
 func (this *DecryptError) Reset() {
 	*this = DecryptError{}
-}
-func NewDecryptError() *DecryptError {
-	return new(DecryptError)
 }
 
 func init() {

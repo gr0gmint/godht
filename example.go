@@ -4,8 +4,14 @@ import "os"
 import "strconv"
 import "bytes"
 import "fmt"
+import "time"
 
 func main() {
+    if len(os.Args) < 4 {
+        fmt.Printf("Usage:  ./8.out <listenport> <knownhost> <path-to-keypair> [<JSON-interface listenport>]\n")
+        return
+    }
+    
     node := dht.NewNode()
     port,_ := strconv.Atoi(os.Args[1])
 
@@ -22,18 +28,9 @@ func main() {
     _,v := node.IterativeFindValue(key)
     fmt.Printf("Found value: %s\n", v)
     if len(os.Args) == 5 {
-        var jsonport int
-        fmt.Sscanf(os.Args[4], "%d", &jsonport)
-        go dht.ListenJSON(node,jsonport)
+    var jsonport int
+    fmt.Sscanf(os.Args[4], "%d", &jsonport)
+    go func() { err := dht.ListenJSON(node,jsonport); if err != nil {fmt.Printf("%s\n", err) }}()
     }
-    for {
-       j:= node.AcceptStream(80)
-       fmt.Printf("AcceptStream\n")
-       go func () {
-        for {
-            j.Read()
-        }
-       }()
-   }
-       
+    time.Sleep(123123123912314)   
 }
