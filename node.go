@@ -232,19 +232,7 @@ func (this *Bucket) Pop() *InNodeDescriptor {
 func (this *Bucket) Cut(i,j int)  {
     this.v.Cut(i,j)
 }
-func (this *Bucket) Iter()  chan *InNodeDescriptor {
-    ch := this.v.Iter()
-    nodech := make(chan *InNodeDescriptor)
-    go func(){
-        for {
-            if closed(ch) { close(nodech); return }
-            m := (<-ch)
-            if m == nil {close(nodech); return }
-            nodech <- m.(*InNodeDescriptor)
-        }
-    }()
-    return nodech
-}
+
 
 
 
@@ -447,7 +435,7 @@ func (this *UDPSession) DecodePacket(data Buf) (*Header,[]byte, os.Error) {
     //VERIFY AND/OR DECRYPT
     if cryptoheader.Key != nil {
         h := sha1.New()
-        this.DecryptKey, err = rsa.DecryptOAEP(h,rand.Reader, this.Node.Keypair, cryptoheader.Key, &[...]byte("GONUTS")) 
+        this.DecryptKey, err = rsa.DecryptOAEP(h,rand.Reader, this.Node.Keypair, cryptoheader.Key, [...]byte("GONUTS")[:]) 
         fmt.Printf("DecryptKey = %x\n", this.DecryptKey)
     }
     
@@ -578,7 +566,7 @@ func (this *UDPSession) EncodePacket(data []byte, t,id int32, ishmac,encrypted b
             if this.NeedToSendKey { //Recipient hasn't got EncryptKey yet
                 h := sha1.New()
                 fmt.Printf("Encrypting key!\n")
-                cryptoheader.Key, err = rsa.EncryptOAEP(h, rand.Reader, this.RecpNode.Publickey, this.EncryptKey, &[...]byte("GONUTS"))
+                cryptoheader.Key, err = rsa.EncryptOAEP(h, rand.Reader, this.RecpNode.Publickey, this.EncryptKey, [...]byte("GONUTS")[:])
                 this.NeedToSendKey = false
             }
             
@@ -1164,41 +1152,40 @@ func (this *Node) FindCloseNodes(key Key) *Bucket {
     distance := XOR(key, this.Nodeid)
 
     closenodes := NewBucket(this)
-    var ichan chan *InNodeDescriptor
     var first int
-    var leap int = 1
-    
+    var leap int = 0
+    var goright bool = true
     first = int(BucketNo(distance))
     if this.Buckets[first] == nil {
         this.Buckets[first] = NewBucket(this)
     }
-    ichan = this.Buckets[first].Iter()
+
+    i := 0
+    var len int
     for closenodes.Len() < K {
-        if (first + leap) >= 159 &&  ( first - leap) < 0 {
+        if (first + leap) > 159 &&  ( first - leap) < 0 {
            break
         }
-        if closed(ichan) {
-        
-            if  first+leap <= 160 && this.Buckets[first + leap] != nil {
-                ichan = this.Buckets[first + leap].Iter()
-            }
-            if first - leap >= 0 && this.Buckets[first - leap] != nil{
-                ichan = this.Buckets[first - leap].Iter()
-            }
-            leap ++
-        } 
-        m := <-ichan
-        if m == nil {
-
-            if  first+leap <= 160 && this.Buckets[first + leap] != nil {
-                ichan = this.Buckets[first + leap].Iter()
-            }
-            if first - leap >= 0 && this.Buckets[first - leap] != nil{
-                ichan = this.Buckets[first - leap].Iter()
-            }
-            leap ++
+        if goright {
+        if this.Buckets[first+leap] == nil { len = 0 } else { len = this.Buckets[first+leap].Len() }
         } else {
-        closenodes.Push(m)
+        if this.Buckets[first-leap] == nil { len = 0 } else {  len = this.Buckets[first-leap].Len() }
+        }
+        if i >= len {
+            leap ++
+            i = 0
+            goright = !goright
+        } else {
+        if goright {
+            if  this.Buckets[first+leap].At(i) != nil {
+                closenodes.Push(this.Buckets[first+leap].At(i))
+            }
+        } else {
+            if this.Buckets[first-leap].At(i) != nil {
+                closenodes.Push(this.Buckets[first-leap].At(i))
+            }
+        }
+        i++
         }
     }
     
@@ -1207,12 +1194,10 @@ func (this *Node) FindCloseNodes(key Key) *Bucket {
 func (this *Node) HasNode(key Key) (bool, *InNodeDescriptor) {
     distance := XOR(this.Nodeid,key)
     no := int(BucketNo(distance))
-    ch := this.Buckets[no].Iter() 
-    for {
-        if closed(ch) {break }
-        n := <-ch
-        if n == nil {break }
-        if bytes.Compare(n.Nodeid, key) == 0 { return true, n}
+    len := this.Buckets[no].Len()
+    for i := 0; i <len; i++{
+        if this.Buckets[no].At(i) == nil {break }
+        if bytes.Compare(this.Buckets[no].At(i).Nodeid, key) == 0 { return true, this.Buckets[no].At(i)}
     }
     return false, nil
     
@@ -1325,15 +1310,12 @@ func (this *Node) IterativeFindNode(key Key) *Bucket {
                     inode :=  shortlist.At(ic)
                     if inode != nil {
                         already := false
-                        j := alreadyAsked.Iter()
+                        jlen := alreadyAsked.Len()
                         async.Do(func() {
-                            for {
+                            for  j:= 0; j<jlen; j++ {
 
-                                if closed(j) {break}
-                                m := <-j
-                                if m == nil {break}
                                 
-                                if bytes.Compare(m.Nodeid, inode.Nodeid) == 0 {already=true; break}
+                                if bytes.Compare(alreadyAsked.At(j).Nodeid, inode.Nodeid) == 0 {already=true; break}
                             }
                            if !already {
                                 alreadyAsked.Push(inode)
@@ -1352,15 +1334,11 @@ func (this *Node) IterativeFindNode(key Key) *Bucket {
                                                         fmt.Printf("Done Asking\n")
                             closer := false
                             if nodes == nil {return }
-                             c :=  nodes.Iter()
+                             len :=  nodes.Len()
                             async.Do(func() { 
 
-                                for {
-
-                                    if closed(c) {break}
-                                    n := <-c
-                                    if n == nil {break}
-                                    
+                                for j:= 0; j<len; j++ {
+                                    n := nodes.At(j)
                                     donotadd := false
                                     if bytes.Compare(n.Nodeid, this.Nodeid) == 0 { donotadd = true }
                                     for k := 0; k < nodelist.Len(); k++ {
@@ -1462,13 +1440,11 @@ func (this *Node) IterativeFindValue(key Key) (*Bucket, []byte) {
                     inode :=  shortlist.At(ic)
                     if inode != nil {
                         already := false
-                        j := alreadyAsked.Iter()
+                        jlen := alreadyAsked.Len()
                         async.Do(func() {
-                            for {
+                            for j:= 0; j<jlen; j++ {
 
-                                if closed(j) {break}
-                                m := <-j
-                                if m == nil {break}
+                                m := alreadyAsked.At(j)
                                 
                                 if bytes.Compare(m.Nodeid, inode.Nodeid) == 0 {already=true; break}
                             }
@@ -1489,14 +1465,12 @@ func (this *Node) IterativeFindValue(key Key) (*Bucket, []byte) {
                             }
                             closer := false
                             if nodes == nil {return }
-                                     c :=  nodes.Iter()
+                             len :=  nodes.Len()
                             async.Do(func() { 
 
-                                for {
+                                for j:=0; j<len; j++ {
 
-                                    if closed(c) {break}
-                                    n := <-c
-                                    if n == nil {break}
+                                    n := nodes.At(j)
                                     
                                     donotadd := false
                                     if bytes.Compare(n.Nodeid, this.Nodeid) == 0 { donotadd = true }
@@ -1582,13 +1556,10 @@ func (this *Node) AcceptStream (port int32) *StreamHandler {
 func (this *Node) IterativeStore(key Key, value io.Reader) {
     closenodes := this.IterativeFindNode(key)
     fmt.Printf("back from iterativefindnode\n")
-    ch := closenodes.Iter()
-    for {
-        if closed(ch) { break }
-        m := <-ch
-        if m == nil {break}
-        fmt.Printf("Trying to STORE on %s\n", m.Session.RAddr)
-        m.Session.Store(key, value)
+    len := closenodes.Len()
+    for i:= 0; i<len; i++ {
+        //fmt.Printf("Trying to STORE on %s\n", m.Session.RAddr)
+        closenodes.At(i).Session.Store(key, value)
     }
 }
 
@@ -1599,12 +1570,11 @@ func (this *Node) MoveKeyToTop(key Key) {
             no := int(BucketNo(distance))
             b,ok := this.Buckets[no]
             if b == nil || !ok {return }
-            ch := b.Iter()
+            len := b.Len()
             var position int = 0
-            for i := 0; ; i++ {
-                if closed(ch) { break}
-                m := <-ch
-                if m == nil {break }
+            for i := 0; i<len; i++ {
+
+                m := b.At(i)
                 if bytes.Compare(key,m.Nodeid) == 0 { position = i }
             }
             for i := position; i>0; i-- {

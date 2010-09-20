@@ -22,17 +22,18 @@ func main() {
     _,v := node.IterativeFindValue(key)
     fmt.Printf("Found value: %s\n", v)
     if len(os.Args) == 5 {
-    var jsonport int
-    fmt.Sscanf(os.Args[4], "%d", &jsonport)
-    go dht.ListenJSON(node,jsonport)
+        var jsonport int
+        fmt.Sscanf(os.Args[4], "%d", &jsonport)
+        go dht.ListenJSON(node,jsonport)
     }
-        for {
+    for {
        j:= node.AcceptStream(80)
        fmt.Printf("AcceptStream\n")
-       go func () {for {
-       j.Read()
-       }
+       go func () {
+        for {
+            j.Read()
+        }
        }()
-       }
+   }
        
 }
